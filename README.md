@@ -20,27 +20,6 @@ A desktop utility tool to audit, scan, and map font family usage across timeline
 
 ---
 
-## 🛠️ How It Works (Under the Hood)
-
-```mermaid
-graph TD
-    A[Upload .drp file] --> B[Unzip to temporary workspace]
-    B --> C[Scan Media Pool / MpFolder.xml]
-    C --> D[Identify Timelines & Seq Database IDs]
-    D --> E[Map to SeqContainer/*.xml files]
-    E --> F[Iterate through Tracks & Clips]
-    F --> G[Extract standard Subtitle track fonts]
-    F --> H[Decompress Rich/Fusion FieldsBlob & EffectFiltersBA via zlib]
-    H --> I[Regex & database scan for text and font names]
-    G --> J[Deduplicate and group fonts]
-    I --> J
-    J --> K[Format dashboard UI JSON response]
-```
-
-Resolve stores metadata for text formatting in compressed hex streams within its XML files. This utility decompresses those streams in memory, runs pattern-matching heuristics, maps them to timeline coordinates, and translates frame values into standard `HH:MM:SS:FF` timecodes.
-
----
-
 ## 📦 Installation & Setup
 
 ### Prerequisites
