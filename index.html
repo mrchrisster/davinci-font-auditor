@@ -130,6 +130,62 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Font Swapping & Replacement Tool -->
+                <div class="glass-card rounded-xl p-5 border border-slate-900 flex flex-col gap-4 mt-2">
+                    <span class="text-[10px] font-semibold text-slate-500 tracking-wider uppercase font-display px-1 flex items-center gap-1.5">
+                        <svg class="h-3.5 w-3.5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                        </svg>
+                        Font Replacer & Swapper
+                    </span>
+                    
+                    <div class="flex flex-col gap-1">
+                        <label class="text-[10px] text-slate-400 font-medium">1. Target Font to Swap</label>
+                        <select id="replaceTargetSelect" class="w-full rounded-lg bg-slate-950 border border-slate-800 text-slate-200 py-2 px-3 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                            <!-- Populated dynamically with discovered fonts -->
+                        </select>
+                    </div>
+
+                    <div class="flex flex-col gap-1">
+                        <div class="flex items-center justify-between">
+                            <label class="text-[10px] text-slate-400 font-medium">2. Replacement Font Name</label>
+                            <span id="charLengthIndicator" class="text-[9px] text-slate-500 font-mono">0/0 chars</span>
+                        </div>
+                        <input type="text" id="replaceInput" placeholder="e.g. Arial" class="w-full rounded-lg bg-slate-950 border border-slate-800 text-slate-200 py-2 px-3 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                        <span id="lengthWarning" class="hidden text-[9px] text-rose-400 font-medium mt-1 leading-tight">
+                            Warning: Replacement font must be equal or shorter in length than target font.
+                        </span>
+                    </div>
+
+                    <div class="flex flex-col gap-1">
+                        <label class="text-[10px] text-slate-400 font-medium">3. Filter By Element Type</label>
+                        <div class="grid grid-cols-3 gap-1.5 mt-0.5">
+                            <label class="cursor-pointer">
+                                <input type="radio" name="replaceFilter" value="both" checked class="sr-only peer">
+                                <span class="block text-center text-[9px] py-1.5 rounded-md bg-slate-950 border border-slate-800 text-slate-400 font-medium peer-checked:bg-indigo-600/20 peer-checked:border-indigo-500 peer-checked:text-indigo-300 transition-all duration-150">
+                                    Both
+                                </span>
+                            </label>
+                            <label class="cursor-pointer">
+                                <input type="radio" name="replaceFilter" value="subtitles" class="sr-only peer">
+                                <span class="block text-center text-[9px] py-1.5 rounded-md bg-slate-950 border border-slate-800 text-slate-400 font-medium peer-checked:bg-indigo-600/20 peer-checked:border-indigo-500 peer-checked:text-indigo-300 transition-all duration-150">
+                                    Subtitles
+                                </span>
+                            </label>
+                            <label class="cursor-pointer">
+                                <input type="radio" name="replaceFilter" value="rich" class="sr-only peer">
+                                <span class="block text-center text-[9px] py-1.5 rounded-md bg-slate-950 border border-slate-800 text-slate-400 font-medium peer-checked:bg-indigo-600/20 peer-checked:border-indigo-500 peer-checked:text-indigo-300 transition-all duration-150">
+                                    Titles
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <button id="replaceBtn" class="w-full mt-2 py-2.5 px-4 rounded-lg bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 hover:from-indigo-600 hover:to-pink-600 text-white font-semibold text-xs tracking-wide shadow-md hover:shadow-lg transition-all duration-200 active:scale-[0.98] disabled:opacity-30 disabled:pointer-events-none">
+                        Process & Download DRP
+                    </button>
+                </div>
             </div>
 
             <!-- Main Area (Font occurrences) -->
@@ -188,6 +244,13 @@
         const statTimelines = document.getElementById('statTimelines');
         const statFonts = document.getElementById('statFonts');
 
+        const replaceTargetSelect = document.getElementById('replaceTargetSelect');
+        const replaceInput = document.getElementById('replaceInput');
+        const charLengthIndicator = document.getElementById('charLengthIndicator');
+        const lengthWarning = document.getElementById('lengthWarning');
+        const replaceBtn = document.getElementById('replaceBtn');
+        
+        let lastUploadedFile = null;
         let projectData = [];
 
         // Conversion helper: Frames to Timecode (assumes standard 24fps)
@@ -250,6 +313,8 @@
                 return;
             }
 
+            lastUploadedFile = file;
+
             // Reset dashboard state
             terminalLogs.innerHTML = '';
             terminalContainer.classList.remove('hidden');
@@ -310,6 +375,19 @@
                 Object.keys(t.fonts).forEach(f => uniqueFonts.add(f));
             });
             statFonts.innerText = uniqueFonts.size;
+
+            // Populate replace target select
+            replaceTargetSelect.innerHTML = '';
+            const sortedUniqueFonts = Array.from(uniqueFonts).sort();
+            sortedUniqueFonts.forEach(font => {
+                const opt = document.createElement('option');
+                opt.value = font;
+                opt.text = font;
+                replaceTargetSelect.appendChild(opt);
+            });
+            
+            // Trigger length check init
+            checkFontLengths();
 
             // Trigger initial render of first timeline
             if (projectData.length) {
@@ -391,6 +469,96 @@
                 fontsContainer.appendChild(card);
             });
         }
+
+        function checkFontLengths() {
+            const target = replaceTargetSelect.value || "";
+            const replacement = replaceInput.value || "";
+            
+            charLengthIndicator.innerText = `${replacement.length} / ${target.length} chars`;
+            
+            if (replacement.length > target.length) {
+                lengthWarning.classList.remove('hidden');
+                replaceBtn.disabled = true;
+            } else {
+                lengthWarning.classList.add('hidden');
+                replaceBtn.disabled = false;
+            }
+        }
+        
+        replaceTargetSelect.addEventListener('change', checkFontLengths);
+        replaceInput.addEventListener('input', checkFontLengths);
+
+        replaceBtn.addEventListener('click', () => {
+            if (!lastUploadedFile) {
+                alert("Please upload a DRP file first.");
+                return;
+            }
+            
+            const targetFont = replaceTargetSelect.value;
+            const replacementFont = replaceInput.value.trim();
+            
+            if (!targetFont || !replacementFont) {
+                alert("Please specify a replacement font name.");
+                return;
+            }
+            
+            if (replacementFont.length > targetFont.length) {
+                alert("Replacement font name is longer than target font. Swapping is disabled to protect binary structure.");
+                return;
+            }
+            
+            const filterType = document.querySelector('input[name="replaceFilter"]:checked').value;
+            
+            // Show terminal for processing logs
+            terminalLogs.innerHTML = '';
+            terminalContainer.classList.remove('hidden');
+            loaderStatus.innerText = "Processing Font Replacement...";
+            logMessage(`Starting project-wide font swap: '${targetFont}' -> '${replacementFont}' (Filter: ${filterType})`, 'progress');
+            logMessage(`Compiling DRP container and processing sequence files...`, 'info');
+            
+            const formData = new FormData();
+            formData.append('file', lastUploadedFile);
+            formData.append('target_font', targetFont);
+            formData.append('replacement_font', replacementFont);
+            formData.append('filter_type', filterType);
+            
+            fetch('/replace', {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => {
+                if (!res.ok) {
+                    return res.json().then(err => { throw new Error(err.error || 'Replacement failed') });
+                }
+                return res.blob();
+            })
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                
+                const nameParts = lastUploadedFile.name.split('.');
+                const ext = nameParts.pop();
+                const newName = nameParts.join('.') + '-replaced.' + ext;
+                
+                a.download = newName;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                
+                loaderStatus.innerText = "Completed";
+                logMessage(`Font swap succeeded! Modified DRP downloaded as: ${newName}`, 'success');
+                setTimeout(() => {
+                    terminalContainer.classList.add('hidden');
+                }, 4000);
+            })
+            .catch(err => {
+                loaderStatus.innerText = "Failed";
+                logMessage(`Error swapping fonts: ${err.message}`, 'error');
+                alert(`Error swapping fonts: ${err.message}`);
+            });
+        });
     </script>
 </body>
 </html>
