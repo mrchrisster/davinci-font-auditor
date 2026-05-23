@@ -2,7 +2,7 @@
 
 A desktop utility tool to audit, scan, and map font family usage across timelines directly from a DaVinci Resolve Project (`.drp`) file—completely offline, without needing to open DaVinci Resolve.
 
-![Dashboard Preview]([https://raw.githubusercontent.com/chrishelms/Davinci-Font-Mapper/main/preview_mockup.png](https://github.com/mrchrisster/davinci-font-auditor/blob/main/media/app.png)) *(Placeholder image path)*
+![Dashboard Preview](https://github.com/mrchrisster/davinci-font-auditor/blob/main/media/app.png)
 
 ---
 
