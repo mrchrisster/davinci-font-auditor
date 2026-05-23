@@ -175,29 +175,22 @@ def clean_and_validate_style(style_str):
     return ' '.join(cleaned_words) if cleaned_words else None
 
 def extract_text_and_fonts_from_zstd(hex_str):
-    """Extract title text, fonts, and colors from a ZSTD-compressed EffectFiltersBA blob.
+    """Extract title text, font families, font styles, and colors from ZSTD EffectFiltersBA blob.
     
-    After ZSTD decompression, the data contains a protobuf-like structure with
-    UTF-16-LE encoded strings for:
-    - Title text (first meaningful string, near offset 0x42)
-    - Font family name (e.g., "HelveticaNeueLT Std Med Cn")
-    - Font style (e.g., "67 Medium Condensed")
-    - Template name (e.g., "Basic Title")
-    - Colors (e.g., "#ebecea", "#FFFFFF")
-    
-    Returns (title_text, fonts_list, colors_list, template_name).
+    Returns (title_text, families_list, styles_list, colors_list, template_name).
     """
     decompressed = decompress_zstd_blob(hex_str)
     if not decompressed:
-        return "", [], [], ""
+        return "", [], [], [], ""
     
-    # Extract title text using structural parsing (handles single-char titles like "A")
+    # Extract title text using structural parsing
     title_text = extract_title_text_from_decompressed(decompressed)
     
     # Extract all longer strings for fonts, colors, template
     strings = extract_utf16le_strings(decompressed, min_length=2)
     
-    fonts = []
+    families = []
+    styles = []
     colors = []
     template_name = ""
     
@@ -211,11 +204,7 @@ def extract_text_and_fonts_from_zstd(hex_str):
     
     for offset, s in strings:
         s_stripped = s.strip()
-        if not s_stripped or s_stripped in skip_strings:
-            continue
-            
-        # Skip the title text itself (already extracted)
-        if s_stripped == title_text:
+        if not s_stripped or s_stripped in skip_strings or s_stripped == title_text:
             continue
             
         # Color values start with #
@@ -223,19 +212,19 @@ def extract_text_and_fonts_from_zstd(hex_str):
             colors.append(s_stripped)
             continue
         
-        # First, try to see if it starts with a number (style pattern like "67 Medium Condensed")
+        # First, check style weight patterns (starts with number e.g. "67 Medium Condensed")
         if font_style_pattern.match(s_stripped):
             style_parts = s_stripped.split(' ', 1)
             if len(style_parts) == 2:
                 cleaned = clean_and_validate_style(style_parts[1])
                 if cleaned:
-                    fonts.append(cleaned)
+                    styles.append(cleaned)
             continue
             
-        # Second, try to clean it as a style directly (like 'BoldK' or 'Medium9')
+        # Second, check if the string matches a standalone style name (like "Bold" or "Medium")
         cleaned_style = clean_and_validate_style(s_stripped)
         if cleaned_style:
-            fonts.append(cleaned_style)
+            styles.append(cleaned_style)
             continue
         
         # Third, check if it looks like a font family name
@@ -247,7 +236,7 @@ def extract_text_and_fonts_from_zstd(hex_str):
                 is_font = True
         
         if is_font:
-            fonts.append(s_stripped)
+            families.append(s_stripped)
             continue
         
         # Check if it's a template name
@@ -257,37 +246,37 @@ def extract_text_and_fonts_from_zstd(hex_str):
             template_name = s_stripped
             continue
     
-    # Deduplicate fonts
-    unique_fonts = []
-    for f in fonts:
-        if f not in unique_fonts:
-            unique_fonts.append(f)
+    # Deduplicate lists
+    unique_families = []
+    for f in families:
+        if f not in unique_families:
+            unique_families.append(f)
+            
+    unique_styles = []
+    for s in styles:
+        if s not in unique_styles:
+            unique_styles.append(s)
     
     # Deduplicate colors
     unique_colors = list(set(colors))
     
-    return title_text, unique_fonts, unique_colors, template_name
+    return title_text, unique_families, unique_styles, unique_colors, template_name
 
 def extract_text_and_fonts_from_rich_blob(hex_str):
-    """Extract text and font info from a Rich generator's EffectFiltersBA blob.
+    """Extract text, font families, and styles from a Rich generator's EffectFiltersBA blob.
     
-    First tries ZSTD decompression (the primary encoding used by DaVinci Resolve).
-    Falls back to zlib-based heuristic extraction for older formats.
-    
-    Returns (title_text, fonts_list).
+    Returns (title_text, families_list, styles_list).
     """
     # Try ZSTD first (preferred method)
     if HAS_ZSTD and hex_str and len(hex_str) > 26:
         try:
             blob_bytes = bytes.fromhex(hex_str)
-            # Check for ZSTD signature: 8-byte header + type byte 0x81 + ZSTD magic
             if (len(blob_bytes) > 13 and 
                 blob_bytes[8] == 0x81 and 
                 blob_bytes[9:13] == b'\x28\xb5\x2f\xfd'):
-                title_text, fonts, colors, template = extract_text_and_fonts_from_zstd(hex_str)
-                if title_text or fonts:
-                    print(f"[BACKEND] ZSTD decoded: text='{title_text}', fonts={fonts}")
-                    return title_text, fonts
+                title_text, families, styles, colors, template = extract_text_and_fonts_from_zstd(hex_str)
+                if title_text or families or styles:
+                    return title_text, families, styles
         except Exception as e:
             print(f"[BACKEND] ZSTD extraction failed, falling back: {e}")
     
@@ -352,12 +341,88 @@ def extract_text_and_fonts_from_rich_blob(hex_str):
             if unique_strings:
                 longest_text = unique_strings[0]
                 
-    return longest_text, list(fonts)
+    families = []
+    styles = []
+    for f in fonts:
+        cleaned_style = clean_and_validate_style(f)
+        if cleaned_style:
+            styles.append(cleaned_style)
+        else:
+            families.append(f)
+            
+    return longest_text, families, styles
 
 def extract_fonts_from_blob(hex_str):
-    """Wrapper for backwards compatibility."""
-    _, fonts = extract_text_and_fonts_from_rich_blob(hex_str)
-    return fonts
+    """Wrapper for backwards compatibility. Returns only font families (styles excluded)."""
+    _, families, _ = extract_text_and_fonts_from_rich_blob(hex_str)
+    return families
+
+def extract_generator_metadata(g):
+    """Extracts font families, styles, and custom text from a generator XML element.
+    
+    Returns (families_set, styles_set, custom_text).
+    """
+    families = set()
+    styles = set()
+    custom_texts = []
+    
+    g_name_node = g.find("Name")
+    g_name = g_name_node.text.strip() if g_name_node is not None and g_name_node.text else ""
+    
+    # Search XML nodes for font attributes
+    for elem in g.iter():
+        if 'font' in elem.tag.lower() and elem.text:
+            font_val = elem.text.strip()
+            cleaned_style = clean_and_validate_style(font_val)
+            if cleaned_style:
+                styles.add(cleaned_style)
+            else:
+                families.add(font_val)
+        for k, v in elem.attrib.items():
+            if 'font' in k.lower():
+                font_val = v.strip()
+                cleaned_style = clean_and_validate_style(font_val)
+                if cleaned_style:
+                    styles.add(cleaned_style)
+                else:
+                    families.add(font_val)
+                
+    # Search inside Name markup
+    if g_name:
+        face_matches = re.findall(r'face=["\']([^"\']+)["\']', g_name)
+        for face in face_matches:
+            cleaned_style = clean_and_validate_style(face)
+            if cleaned_style:
+                styles.add(cleaned_style)
+            else:
+                families.add(face)
+            
+    # Search FieldsBlob and EffectFiltersBA decompressed contents
+    for tag in ["FieldsBlob", "EffectFiltersBA"]:
+        node = g.find(tag)
+        if node is not None and node.text:
+            custom_text, found_families, found_styles = extract_text_and_fonts_from_rich_blob(node.text)
+            if custom_text:
+                custom_texts.append(custom_text)
+            for ff in found_families:
+                families.add(ff)
+            for fs in found_styles:
+                styles.add(fs)
+                
+    # Choose the best custom text (longest one)
+    custom_text = ""
+    if custom_texts:
+        custom_texts.sort(key=len, reverse=True)
+        custom_text = custom_texts[0]
+        
+    # Filter out substrings to get the most specific font names
+    resolved_families = []
+    sorted_families = sorted(list(families), key=len, reverse=True)
+    for f in sorted_families:
+        if not any(f.lower() in other.lower() for other in resolved_families):
+            resolved_families.append(f)
+            
+    return set(resolved_families), styles, custom_text
 
 def parse_drp(drp_path):
     """Unzips and parses the DRP file to extract timelines, clips, and fonts."""
@@ -452,53 +517,23 @@ def parse_drp(drp_path):
                     if g_type not in ["Rich", "Subtitle"] and not g_name:
                         return
                         
-                    fonts = set()
-                    custom_texts = []
+                    families, styles, custom_text = extract_generator_metadata(g)
+                    resolved_families = list(families)
                     
-                    # Search XML nodes for font attributes
-                    for elem in g.iter():
-                        if 'font' in elem.tag.lower() and elem.text:
-                            fonts.add(elem.text.strip())
-                        for k, v in elem.attrib.items():
-                            if 'font' in k.lower():
-                                fonts.add(v.strip())
-                                
-                    # Search inside Name markup
-                    if g_name:
-                        face_matches = re.findall(r'face=["\']([^"\']+)["\']', g_name)
-                        for face in face_matches:
-                            fonts.add(face)
-                            
-                    # Search FieldsBlob and EffectFiltersBA decompressed contents
-                    for tag in ["FieldsBlob", "EffectFiltersBA"]:
-                        node = g.find(tag)
-                        if node is not None and node.text:
-                            custom_text, found_fonts = extract_text_and_fonts_from_rich_blob(node.text)
-                            if custom_text:
-                                custom_texts.append(custom_text)
-                            for ff in found_fonts:
-                                fonts.add(ff)
-                                
-                    # Choose the best custom text (longest one)
-                    custom_text = ""
-                    if custom_texts:
-                        custom_texts.sort(key=len, reverse=True)
-                        custom_text = custom_texts[0]
-                        
-                    # Filter out substrings to get the most specific font names
-                    resolved_fonts = []
-                    sorted_fonts = sorted(list(fonts), key=len, reverse=True)
-                    for f in sorted_fonts:
-                        if not any(f.lower() in other.lower() for other in resolved_fonts):
-                            resolved_fonts.append(f)
-                            
                     # Fallback default: if no font explicitly specified but it is a text/subtitle generator,
                     # resolve defaults to "HelveticaNeue" on macOS (which is implicitly applied and not written to XML)
-                    if not resolved_fonts:
+                    if not resolved_families:
                         if g_type == "Subtitle" or g_type == "Rich":
-                            resolved_fonts = ["HelveticaNeue"]
+                            resolved_families = ["HelveticaNeue"]
                             
-                    for font in resolved_fonts:
+                    # Build styling metadata representation (e.g. "Medium Condensed" or "Bold, Regular")
+                    style_str = ""
+                    if styles:
+                        style_str = ", ".join(sorted(list(styles)))
+                    else:
+                        style_str = "Regular"
+                        
+                    for font in resolved_families:
                         # Clean up formatting strings from Name
                         if g_type == "Subtitle" and g_name:
                             clean_name = re.sub(r'<[^>]+>', '', g_name)
@@ -518,6 +553,7 @@ def parse_drp(drp_path):
                         t["fonts"][font].append({
                             "type": g_type,
                             "clip_name": clean_name,
+                            "style": style_str,
                             "start": int(g.find("Start").text) if g.find("Start") is not None else 0,
                             "duration": int(g.find("Duration").text) if g.find("Duration") is not None else 0
                         })
@@ -574,6 +610,356 @@ def parse_drp(drp_path):
         pass
         
     return timelines
+
+def replace_font_in_blob(hex_str, target_font, replacement_font):
+    """Helper to perform binary-safe font replacement inside ZSTD & zlib streams."""
+    if not hex_str:
+        return hex_str
+    
+    # 1. Try ZSTD replacement first (preferred method)
+    if HAS_ZSTD and len(hex_str) > 26:
+        try:
+            blob_bytes = bytes.fromhex(hex_str)
+            if (len(blob_bytes) > 13 and 
+                blob_bytes[8] == 0x81 and 
+                blob_bytes[9:13] == b'\x28\xb5\x2f\xfd'):
+                
+                decomp = decompress_zstd_blob(hex_str)
+                if decomp:
+                    target_bytes = target_font.encode('utf-16-le')
+                    replacement_bytes = replacement_font.encode('utf-16-le')
+                    
+                    # Pad replacement to match target byte length
+                    if len(replacement_bytes) < len(target_bytes):
+                        padded = replacement_bytes + b'\x00' * (len(target_bytes) - len(replacement_bytes))
+                    else:
+                        padded = replacement_bytes[:len(target_bytes)]
+                        
+                    if target_bytes in decomp:
+                        modified_decomp = decomp.replace(target_bytes, padded)
+                        dctx = zstandard.ZstdCompressor()
+                        compressed = dctx.compress(modified_decomp)
+                        header = struct.pack('>II', 2, len(compressed))
+                        type_marker = b'\x81'
+                        return (header + type_marker + compressed).hex().upper()
+        except Exception as e:
+            print(f"[BACKEND] ZSTD replacement failed: {e}")
+            
+    # 2. Try legacy zlib replacement fallback
+    try:
+        blob_bytes = bytes.fromhex(hex_str)
+        for offset in range(len(blob_bytes)):
+            if len(blob_bytes) - offset < 8:
+                break
+            for wbits in [15, -15]:
+                try:
+                    decomp = zlib.decompress(blob_bytes[offset:], wbits)
+                    if decomp:
+                        target_utf16 = target_font.encode('utf-16-le')
+                        replacement_utf16 = replacement_font.encode('utf-16-le')
+                        target_utf8 = target_font.encode('utf-8')
+                        replacement_utf8 = replacement_font.encode('utf-8')
+                        
+                        modified_decomp = decomp
+                        replaced_any = False
+                        
+                        if target_utf16 in decomp:
+                            if len(replacement_utf16) < len(target_utf16):
+                                padded = replacement_utf16 + b'\x00' * (len(target_utf16) - len(replacement_utf16))
+                            else:
+                                padded = replacement_utf16[:len(target_utf16)]
+                            modified_decomp = modified_decomp.replace(target_utf16, padded)
+                            replaced_any = True
+                            
+                        if target_utf8 in decomp:
+                            if len(replacement_utf8) < len(target_utf8):
+                                padded = replacement_utf8 + b'\x00' * (len(target_utf8) - len(replacement_utf8))
+                            else:
+                                padded = replacement_utf8[:len(target_utf8)]
+                            modified_decomp = modified_decomp.replace(target_utf8, padded)
+                            replaced_any = True
+                            
+                        if replaced_any:
+                            comp_obj = zlib.compressobj(wbits=wbits)
+                            compressed = comp_obj.compress(modified_decomp) + comp_obj.flush()
+                            new_bytes = blob_bytes[:offset] + compressed
+                            return new_bytes.hex().upper()
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[BACKEND] zlib replacement failed: {e}")
+        
+    return hex_str
+
+def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filter_type, target_style=None):
+    """Processes a DRP file, replacing target_family instances with replacement_font, filtered by type and optional style.
+    
+    Returns the path to the newly re-packaged DRP file.
+    """
+    import tempfile
+    
+    # Create distinct working directories
+    temp_extract_dir = tempfile.mkdtemp(prefix="drp_extract_")
+    
+    try:
+        # 1. Unzip DRP to temp folder
+        print(f"[BACKEND] Unzipping DRP for replacement: {drp_path}")
+        with zipfile.ZipFile(drp_path, 'r') as z:
+            z.extractall(temp_extract_dir)
+            
+        # 2. Process SeqContainer XML files
+        seq_container_dir = os.path.join(temp_extract_dir, "SeqContainer")
+        if os.path.exists(seq_container_dir):
+            for sf in os.listdir(seq_container_dir):
+                if not sf.endswith('.xml'):
+                    continue
+                sf_path = os.path.join(seq_container_dir, sf)
+                
+                try:
+                    with open(sf_path, 'rb') as f:
+                        xml_content = f.read()
+                        
+                    # Sanitize with our unique __DOUBLE_COLON__ placeholder
+                    sanitized = xml_content.replace(b'::', b'__DOUBLE_COLON__')
+                    root = ET.fromstring(sanitized)
+                    modified = False
+                    
+                    # A. Video tracks (always Rich text)
+                    if filter_type in ["both", "rich"]:
+                        video_tracks = root.findall(".//VideoTrackVec/Element/Sm2TiTrack")
+                        for track in video_tracks:
+                            for g in track.findall(".//Sm2TiGenerator"):
+                                g_families, g_styles, _ = extract_generator_metadata(g)
+                                if not g_families:
+                                    g_families = {"HelveticaNeue"}
+                                    
+                                matches_family = any(target_family.lower() in f.lower() for f in g_families)
+                                matches_style = True
+                                if target_style:
+                                    matches_style = any(target_style.lower() in s.lower() for s in g_styles)
+                                    
+                                if matches_family and matches_style:
+                                    for tag in ["FieldsBlob", "EffectFiltersBA"]:
+                                        node = g.find(tag)
+                                        if node is not None and node.text:
+                                            orig_text = node.text.strip()
+                                            new_text = replace_font_in_blob(orig_text, target_family, replacement_font)
+                                            if orig_text != new_text:
+                                                node.text = new_text
+                                                modified = True
+                                            
+                    # B. Subtitle tracks (subtitle clips & track styling)
+                    if filter_type in ["both", "subtitles"]:
+                        subtitle_tracks = root.findall(".//SubtitleTrackVec/Element/Sm2TiTrack")
+                        for track in subtitle_tracks:
+                            # Subtitle track-wide styling style - only replace if target_style is None
+                            if not target_style:
+                                for tag in ["FieldsBlob", "EffectFiltersBA"]:
+                                    node = track.find(tag)
+                                    if node is not None and node.text:
+                                        orig_text = node.text.strip()
+                                        new_text = replace_font_in_blob(orig_text, target_family, replacement_font)
+                                        if orig_text != new_text:
+                                            node.text = new_text
+                                            modified = True
+                            # Subtitle generator clips
+                            for g in track.findall(".//Sm2TiGenerator"):
+                                g_families, g_styles, _ = extract_generator_metadata(g)
+                                if not g_families:
+                                    g_families = {"HelveticaNeue"}
+                                    
+                                matches_family = any(target_family.lower() in f.lower() for f in g_families)
+                                matches_style = True
+                                if target_style:
+                                    matches_style = any(target_style.lower() in s.lower() for s in g_styles)
+                                    
+                                if matches_family and matches_style:
+                                    for tag in ["FieldsBlob", "EffectFiltersBA"]:
+                                        node = g.find(tag)
+                                        if node is not None and node.text:
+                                            orig_text = node.text.strip()
+                                            new_text = replace_font_in_blob(orig_text, target_family, replacement_font)
+                                            if orig_text != new_text:
+                                                node.text = new_text
+                                                modified = True
+                                            
+                    if modified:
+                        print(f"[BACKEND] Saving modified sequence XML: {sf}")
+                        serialized = ET.tostring(root, encoding='utf-8')
+                        restored = serialized.replace(b'__DOUBLE_COLON__', b'::')
+                        with open(sf_path, 'wb') as f:
+                            f.write(restored)
+                            
+                except Exception as xml_err:
+                    print(f"[BACKEND] Error modifying sequence XML {sf}: {xml_err}")
+                    
+        # 3. Zip back into a processed DRP package, preserving the exact file order
+        output_drp_path = drp_path.replace(".drp", "-replaced.drp")
+        if output_drp_path == drp_path:
+            output_drp_path = drp_path + "-replaced.drp"
+            
+        print(f"[BACKEND] Packaging modified project: {output_drp_path}")
+        
+        # Read the original file order from the input DRP
+        with zipfile.ZipFile(drp_path, 'r') as z_orig:
+            original_file_order = z_orig.namelist()
+            
+        with zipfile.ZipFile(output_drp_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # First, write all files that were in the original DRP in their exact original order
+            for name in original_file_order:
+                abs_path = os.path.join(temp_extract_dir, name)
+                if os.path.exists(abs_path):
+                    zipf.write(abs_path, name)
+            
+            # As a fallback, write any new files that might have been created (though there shouldn't be any)
+            # but ignore OS hidden files like .DS_Store or Thumbs.db
+            for root_dir, dirs, files in os.walk(temp_extract_dir):
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                for file in files:
+                    if file.startswith('.') or file == 'Thumbs.db':
+                        continue
+                    abs_path = os.path.join(root_dir, file)
+                    rel_path = os.path.relpath(abs_path, temp_extract_dir)
+                    if rel_path not in original_file_order:
+                        zipf.write(abs_path, rel_path)
+                        
+        return output_drp_path
+        
+    finally:
+        # Cleanup temporary extraction directory
+        try:
+            shutil.rmtree(temp_extract_dir)
+        except Exception:
+            pass
+
+def get_system_fonts():
+    """Retrieves all unique user-facing system font families installed on the OS."""
+    import platform
+    import subprocess
+    
+    fonts = set(FONTS_DB) # Start with base fonts
+    
+    # 1. macOS (Darwin)
+    if platform.system() == "Darwin":
+        try:
+            out = subprocess.check_output(['system_profiler', 'SPFontsDataType'], text=True, errors='replace')
+            for line in out.splitlines():
+                if 'Family:' in line:
+                    name = line.split('Family:', 1)[1].strip()
+                    # Skip private fallback fonts starting with a dot
+                    if name and not name.startswith('.'):
+                        fonts.add(name)
+        except Exception as e:
+            print(f"[BACKEND] Failed to get macOS fonts: {e}")
+            
+    # 2. Windows
+    elif platform.system() == "Windows":
+        try:
+            import winreg
+            reg_path = r"Software\Microsoft\Windows NT\CurrentVersion\Fonts"
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as key:
+                for i in range(1000):
+                    try:
+                        name, value, _ = winreg.EnumValue(key, i)
+                        clean_name = re.sub(r'\s*\([^)]+\)$', '', name).strip()
+                        clean_name = re.sub(r'\s*(Bold|Italic|Regular|Oblique|Light|Medium|Semibold|Underline)\b', '', clean_name, flags=re.IGNORECASE).strip()
+                        if clean_name and not clean_name.startswith('.'):
+                            fonts.add(clean_name)
+                    except OSError:
+                        break
+        except Exception as e:
+            print(f"[BACKEND] Failed to get Windows fonts: {e}")
+            
+    # 3. Linux (fallback)
+    else:
+        try:
+            out = subprocess.check_output(['fc-list', ':', 'family'], text=True, errors='replace')
+            for line in out.splitlines():
+                parts = line.split(',', 1)
+                name = parts[0].strip()
+                if name and not name.startswith('.'):
+                    fonts.add(name)
+        except Exception as e:
+            print(f"[BACKEND] Failed to get Linux fonts: {e}")
+            
+    return sorted(list(fonts))
+
+@app.route("/system_fonts", methods=["GET"])
+def system_fonts_endpoint():
+    try:
+        fonts = get_system_fonts()
+        return jsonify({"fonts": fonts})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/replace", methods=["POST"])
+def replace_fonts_endpoint():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+        
+    file = request.files["file"]
+    target_font = request.form.get("target_font", "").strip()
+    replacement_font = request.form.get("replacement_font", "").strip()
+    filter_type = request.form.get("filter_type", "both").strip()
+    
+    if file.filename == "":
+        return jsonify({"error": "No file selected"}), 400
+        
+    if not file.filename.endswith(".drp"):
+        return jsonify({"error": "File must be a .drp package"}), 400
+        
+    if not target_font or not replacement_font:
+        return jsonify({"error": "Target and Replacement font names are required"}), 400
+        
+    # Extract target family and style
+    target_style = None
+    if " - " in target_font:
+        parts = target_font.split(" - ", 1)
+        target_family = parts[0].strip()
+        target_style = parts[1].strip()
+    else:
+        target_family = target_font
+        
+    # Check binary length bounds (replacement must be <= target_family)
+    if len(replacement_font) > len(target_family):
+        return jsonify({
+            "error": f"Replacement font name length ({len(replacement_font)} chars) is longer than target font family ({len(target_family)} chars). For binary stability, the replacement font must be equal or shorter in length."
+        }), 400
+        
+    # Save the file temporarily
+    upload_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, file.filename)
+    file.save(file_path)
+    
+    try:
+        output_drp = replace_fonts_in_drp_project(file_path, target_family, replacement_font, filter_type, target_style)
+        
+        # Clean up uploaded DRP
+        os.remove(file_path)
+        
+        # Send the file back and register a cleanup to delete the output file after sending
+        from flask import send_file
+        response = send_file(
+            output_drp,
+            as_attachment=True,
+            download_name=os.path.basename(output_drp)
+        )
+        
+        @response.call_on_close
+        def remove_file():
+            try:
+                if os.path.exists(output_drp):
+                    os.remove(output_drp)
+            except Exception:
+                pass
+                
+        return response
+        
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/analyze", methods=["POST"])
 def analyze_drp():
