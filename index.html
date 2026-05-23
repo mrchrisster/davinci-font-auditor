@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100 selection:bg-indigo-500 selection:text-white">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DaVinci Resolve DRP Font Auditor & Mapper</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'ui-sans-serif', 'system-ui'],
+                        display: ['Outfit', 'ui-sans-serif', 'system-ui'],
+                        mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular'],
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        .glass-card {
+            background: rgba(30, 41, 59, 0.45);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .glow-indigo:hover {
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.15);
+        }
+    </style>
+</head>
+<body class="h-full font-sans flex flex-col antialiased">
+    <!-- Top Nav bar -->
+    <header class="flex-none border-b border-slate-900 bg-slate-950/80 backdrop-blur-md sticky top-0 z-50 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="h-10 w-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-indigo-500/10">
+                <svg class="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+            </div>
+            <div>
+                <h1 class="text-xl font-display font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-slate-100 to-slate-400">
+                    Resolve Font Auditor
+                </h1>
+                <p class="text-xs font-medium text-slate-500">DaVinci Resolve DRP Parser • Phase 1</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-4">
+            <span class="text-xs px-2.5 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-400 font-mono font-medium flex items-center gap-1.5">
+                <span class="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span> Local Server
+            </span>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="flex-1 overflow-y-auto px-6 py-8 max-w-7xl w-full mx-auto flex flex-col gap-8">
+        
+        <!-- Dropzone Container -->
+        <section class="flex-none">
+            <div id="dropzone" class="glass-card glow-indigo transition-all duration-300 rounded-2xl border-2 border-dashed border-slate-800 hover:border-indigo-500/50 p-12 text-center cursor-pointer relative overflow-hidden group">
+                <!-- Background Subtle Gradient -->
+                <div class="absolute inset-0 bg-gradient-to-b from-indigo-600/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"></div>
+                
+                <input type="file" id="fileInput" accept=".drp" class="hidden">
+                <div class="relative z-10 flex flex-col items-center gap-4">
+                    <div class="h-16 w-16 rounded-2xl bg-slate-900/80 border border-slate-800 flex items-center justify-center group-hover:scale-105 group-hover:border-indigo-500/40 group-hover:bg-slate-900 transition-all duration-300">
+                        <svg class="h-8 w-8 text-slate-400 group-hover:text-indigo-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                        </svg>
+                    </div>
+                    <div class="space-y-1">
+                        <h2 class="text-lg font-display font-semibold text-slate-200">Drag & Drop DRP File</h2>
+                        <p class="text-sm text-slate-400">or <span class="text-indigo-400 group-hover:text-indigo-300 transition-colors font-medium">browse local files</span> to begin</p>
+                    </div>
+                    <p class="text-xs text-slate-500">DaVinci Resolve project format (.drp) • Max size up to system limits</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Loading / Logs Terminal -->
+        <section id="terminalContainer" class="hidden flex-none">
+            <div class="rounded-xl border border-slate-900 bg-slate-950 p-4 font-mono text-xs text-slate-400 shadow-2xl relative">
+                <div class="flex items-center justify-between border-b border-slate-900 pb-2 mb-3">
+                    <span class="text-[10px] font-semibold text-slate-500 tracking-wider uppercase flex items-center gap-2">
+                        <svg class="animate-spin h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Project Decoding Process
+                    </span>
+                    <span id="loaderStatus" class="text-indigo-400 font-semibold">Extracting...</span>
+                </div>
+                <div id="terminalLogs" class="space-y-1.5 max-h-36 overflow-y-auto pr-2">
+                    <!-- Dynamic logs go here -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Dashboard Grid (Visible after parsing DRP) -->
+        <section id="dashboard" class="hidden flex-1 grid grid-cols-1 lg:grid-cols-4 gap-8 min-h-0">
+            <!-- Sidebar (Timeline Bins) -->
+            <div class="lg:col-span-1 flex flex-col gap-4">
+                <h3 class="text-sm font-semibold text-slate-400 tracking-wider uppercase font-display">Discovered Timelines</h3>
+                <div class="relative">
+                    <select id="timelineSelect" class="w-full rounded-xl bg-slate-900 border border-slate-800 text-slate-200 py-3 px-4 shadow-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium text-sm transition-all duration-150 appearance-none">
+                        <!-- Populated dynamically -->
+                    </select>
+                    <!-- Custom Arrow Icon -->
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-slate-400">
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </div>
+                </div>
+                <div class="flex-1 glass-card rounded-xl p-4 border border-slate-900 max-h-96 overflow-y-auto flex flex-col gap-2">
+                    <span class="text-[10px] font-semibold text-slate-500 tracking-wider uppercase font-display px-2">Project Stats</span>
+                    <div class="grid grid-cols-2 gap-3 mt-1 p-2 bg-slate-900/40 rounded-lg border border-slate-900/60">
+                        <div>
+                            <p class="text-[10px] text-slate-500 font-medium">Total Timelines</p>
+                            <p id="statTimelines" class="text-lg font-bold font-display text-indigo-400">0</p>
+                        </div>
+                        <div>
+                            <p class="text-[10px] text-slate-500 font-medium">Mapped Fonts</p>
+                            <p id="statFonts" class="text-lg font-bold font-display text-purple-400">0</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Area (Font occurrences) -->
+            <div class="lg:col-span-3 flex flex-col gap-6">
+                <div class="flex items-center justify-between border-b border-slate-900 pb-4">
+                    <div>
+                        <h2 id="selectedTimelineTitle" class="text-2xl font-display font-bold text-white">Timeline Name</h2>
+                        <p class="text-sm text-slate-400">Select a timeline to view its mapped font layout.</p>
+                    </div>
+                    <span id="fontCountBadge" class="text-xs px-3 py-1.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 font-semibold font-mono">
+                        0 Fonts Detected
+                    </span>
+                </div>
+
+                <!-- Fonts Occurrences list -->
+                <div id="fontsContainer" class="space-y-6">
+                    <!-- Populated dynamically with Card elements -->
+                </div>
+
+                <!-- Empty State for timeline -->
+                <div id="emptyState" class="hidden glass-card rounded-2xl border border-slate-900 p-16 text-center flex flex-col items-center gap-4 transition-all duration-300">
+                    <div class="h-16 w-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400">
+                        <svg class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                    </div>
+                    <div class="space-y-1 max-w-sm">
+                        <h3 class="text-lg font-display font-semibold text-slate-200">No Custom Fonts Found</h3>
+                        <p class="text-sm text-slate-500">Subtitles or text fields in this timeline are likely using Resolve's default system fonts, or no generators are present on the tracks.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="flex-none border-t border-slate-900 bg-slate-950 py-4 px-6 text-center text-xs text-slate-500 flex justify-between items-center">
+        <p>© 2026 Post-Production Pipeline Utility Tool.</p>
+        <p class="font-mono text-slate-600">v1.0.0-Beta</p>
+    </footer>
+
+    <!-- App JavaScript Logic -->
+    <script>
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        const terminalContainer = document.getElementById('terminalContainer');
+        const terminalLogs = document.getElementById('terminalLogs');
+        const loaderStatus = document.getElementById('loaderStatus');
+        const dashboard = document.getElementById('dashboard');
+        const timelineSelect = document.getElementById('timelineSelect');
+        const selectedTimelineTitle = document.getElementById('selectedTimelineTitle');
+        const fontCountBadge = document.getElementById('fontCountBadge');
+        const fontsContainer = document.getElementById('fontsContainer');
+        const emptyState = document.getElementById('emptyState');
+        
+        const statTimelines = document.getElementById('statTimelines');
+        const statFonts = document.getElementById('statFonts');
+
+        let projectData = [];
+
+        // Conversion helper: Frames to Timecode (assumes standard 24fps)
+        function framesToTimecode(frames, fps = 24) {
+            if (frames === 0) return "00:00:00:00";
+            const hrs = Math.floor(frames / (fps * 3600));
+            const mins = Math.floor((frames % (fps * 3600)) / (fps * 60));
+            const secs = Math.floor((frames % (fps * 60)) / fps);
+            const f = frames % fps;
+            return [hrs, mins, secs, f].map(x => String(x).padStart(2, '0')).join(':');
+        }
+
+        // Add log entry in terminal
+        function logMessage(text, type = 'info') {
+            const time = new Date().toLocaleTimeString();
+            const logEl = document.createElement('div');
+            logEl.className = 'flex gap-2 leading-relaxed';
+            
+            let color = 'text-slate-400';
+            let prefix = '::';
+            
+            if (type === 'success') {
+                color = 'text-emerald-400 font-semibold';
+                prefix = '✔';
+            } else if (type === 'error') {
+                color = 'text-rose-400 font-semibold';
+                prefix = '✖';
+            } else if (type === 'progress') {
+                color = 'text-indigo-400';
+                prefix = '→';
+            }
+            
+            logEl.innerHTML = `<span class="text-slate-600 select-none">[${time}]</span> <span class="${color}">${prefix} ${text}</span>`;
+            terminalLogs.appendChild(logEl);
+            terminalLogs.scrollTop = terminalLogs.scrollHeight;
+        }
+
+        // Setup dropzone click/drag mechanics
+        dropzone.addEventListener('click', () => fileInput.click());
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.classList.add('border-indigo-500', 'bg-indigo-600/5');
+        });
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.classList.remove('border-indigo-500', 'bg-indigo-600/5');
+        });
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('border-indigo-500', 'bg-indigo-600/5');
+            const files = e.dataTransfer.files;
+            if (files.length) handleFile(files[0]);
+        });
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) handleFile(e.target.files[0]);
+        });
+
+        function handleFile(file) {
+            if (!file.name.endsWith('.drp')) {
+                alert('Please upload a valid DaVinci Resolve Project (.drp) file.');
+                return;
+            }
+
+            // Reset dashboard state
+            terminalLogs.innerHTML = '';
+            terminalContainer.classList.remove('hidden');
+            dashboard.classList.add('hidden');
+            
+            logMessage(`Ingesting file: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`, 'info');
+            loaderStatus.innerText = "Extracting DRP...";
+            logMessage("Starting container extraction. Calling Flask backend...", 'progress');
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            fetch('/analyze', {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => {
+                if (!res.ok) throw new Error('API request failed');
+                return res.json();
+            })
+            .then(data => {
+                if (data.error) throw new Error(data.error);
+                
+                projectData = data.timelines;
+                loaderStatus.innerText = "Complete";
+                logMessage(`DRP successfully decompressed and parsed. Loaded ${projectData.length} timelines.`, 'success');
+                
+                // Animate dropzone collapse or hide it
+                setTimeout(() => {
+                    renderDashboard();
+                }, 800);
+            })
+            .catch(err => {
+                loaderStatus.innerText = "Failed";
+                logMessage(`Parsing error: ${err.message}`, 'error');
+            });
+        }
+
+        function renderDashboard() {
+            dashboard.classList.remove('hidden');
+            terminalContainer.classList.add('hidden');
+            
+            // Populate selector
+            timelineSelect.innerHTML = '';
+            projectData.forEach((t, idx) => {
+                const opt = document.createElement('option');
+                opt.value = idx;
+                opt.text = t.name;
+                timelineSelect.appendChild(opt);
+            });
+
+            // Set global stats
+            statTimelines.innerText = projectData.length;
+            
+            // Collect all unique fonts
+            const uniqueFonts = new Set();
+            projectData.forEach(t => {
+                Object.keys(t.fonts).forEach(f => uniqueFonts.add(f));
+            });
+            statFonts.innerText = uniqueFonts.size;
+
+            // Trigger initial render of first timeline
+            if (projectData.length) {
+                renderTimelineFonts(0);
+            }
+        }
+
+        timelineSelect.addEventListener('change', (e) => {
+            renderTimelineFonts(e.target.value);
+        });
+
+        function renderTimelineFonts(idx) {
+            const timeline = projectData[idx];
+            selectedTimelineTitle.innerText = timeline.name;
+            fontsContainer.innerHTML = '';
+            
+            const fontFamilies = Object.keys(timeline.fonts);
+            fontCountBadge.innerText = `${fontFamilies.length} Font${fontFamilies.length !== 1 ? 's' : ''} Mapped`;
+            
+            if (fontFamilies.length === 0) {
+                emptyState.classList.remove('hidden');
+                return;
+            }
+            
+            emptyState.classList.add('hidden');
+            
+            fontFamilies.forEach(font => {
+                const occurrences = timeline.fonts[font];
+                
+                // Create a beautiful card for each font family
+                const card = document.createElement('div');
+                card.className = 'glass-card rounded-xl border border-slate-900 hover:border-slate-800 p-6 flex flex-col gap-4 transition-all duration-200';
+                
+                card.innerHTML = `
+                    <div class="flex items-center justify-between border-b border-slate-900 pb-3">
+                        <div class="flex items-baseline gap-2">
+                            <h4 class="text-lg font-display font-semibold text-white tracking-wide">${font}</h4>
+                            <span class="text-[10px] text-slate-500 font-mono font-medium">Font Family</span>
+                        </div>
+                        <span class="text-xs px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 font-bold font-mono">
+                            ${occurrences.length} Clip${occurrences.length !== 1 ? 's' : ''}
+                        </span>
+                    </div>
+                    
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs text-slate-400">
+                            <thead>
+                                <tr class="text-slate-500 font-semibold border-b border-slate-900/60 pb-2">
+                                    <th class="py-2 px-1">Clip Name / Content</th>
+                                    <th class="py-2">Type</th>
+                                    <th class="py-2">Start Timecode</th>
+                                    <th class="py-2">Duration</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-900/40">
+                                ${occurrences.map(o => `
+                                    <tr class="hover:bg-slate-900/20 transition-colors">
+                                        <td class="py-2.5 px-1 font-medium text-slate-300 max-w-xs truncate" title="${o.clip_name}">
+                                            ${o.clip_name}
+                                        </td>
+                                        <td class="py-2.5">
+                                            <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wider uppercase ${
+                                                o.type.includes('Subtitle') 
+                                                    ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' 
+                                                    : 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
+                                            }">
+                                                ${o.type}
+                                            </span>
+                                        </td>
+                                        <td class="py-2.5 font-mono text-slate-400">${framesToTimecode(o.start)}</td>
+                                        <td class="py-2.5 font-mono text-slate-500">${framesToTimecode(o.duration)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+                
+                fontsContainer.appendChild(card);
+            });
+        }
+    </script>
+</body>
+</html>
