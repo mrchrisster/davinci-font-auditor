@@ -117,20 +117,6 @@
                         </svg>
                     </div>
                 </div>
-                <div class="flex-1 glass-card rounded-xl p-4 border border-slate-900 max-h-96 overflow-y-auto flex flex-col gap-2">
-                    <span class="text-[10px] font-semibold text-slate-500 tracking-wider uppercase font-display px-2">Project Stats</span>
-                    <div class="grid grid-cols-2 gap-3 mt-1 p-2 bg-slate-900/40 rounded-lg border border-slate-900/60">
-                        <div>
-                            <p class="text-[10px] text-slate-500 font-medium">Total Timelines</p>
-                            <p id="statTimelines" class="text-lg font-bold font-display text-indigo-400">0</p>
-                        </div>
-                        <div>
-                            <p class="text-[10px] text-slate-500 font-medium">Mapped Fonts</p>
-                            <p id="statFonts" class="text-lg font-bold font-display text-purple-400">0</p>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Font Swapping & Replacement Tool -->
                 <div class="glass-card rounded-xl p-5 border border-slate-900 flex flex-col gap-4 mt-2">
                     <span class="text-[10px] font-semibold text-slate-500 tracking-wider uppercase font-display px-1 flex items-center gap-1.5">
@@ -152,7 +138,9 @@
                             <label class="text-[10px] text-slate-400 font-medium">2. Replacement Font Name</label>
                             <span id="charLengthIndicator" class="text-[9px] text-slate-500 font-mono">0/0 chars</span>
                         </div>
-                        <input type="text" id="replaceInput" placeholder="e.g. Arial" class="w-full rounded-lg bg-slate-950 border border-slate-800 text-slate-200 py-2 px-3 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                        <select id="replaceSelect" class="w-full rounded-lg bg-slate-950 border border-slate-800 text-slate-200 py-2 px-3 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                            <!-- Populated dynamically with OS system fonts -->
+                        </select>
                         <span id="lengthWarning" class="hidden text-[9px] text-rose-400 font-medium mt-1 leading-tight">
                             Warning: Replacement font must be equal or shorter in length than target font.
                         </span>
@@ -186,6 +174,29 @@
                         Process & Download DRP
                     </button>
                 </div>
+
+                <!-- Project Stats Card -->
+                <div class="glass-card rounded-xl p-4 border border-slate-900 flex flex-col gap-2 mt-2">
+                    <span class="text-[10px] font-semibold text-slate-500 tracking-wider uppercase font-display px-2">Project Stats</span>
+                    <div class="grid grid-cols-2 gap-3 mt-1 p-2 bg-slate-900/40 rounded-lg border border-slate-900/60">
+                        <div>
+                            <p class="text-[10px] text-slate-500 font-medium">Total Timelines</p>
+                            <p id="statTimelines" class="text-lg font-bold font-display text-indigo-400">0</p>
+                        </div>
+                        <div>
+                            <p class="text-[10px] text-slate-500 font-medium">Mapped Fonts</p>
+                            <p id="statFonts" class="text-lg font-bold font-display text-purple-400">0</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Timeline Fonts Section -->
+                    <div class="mt-2 border-t border-slate-900 pt-2.5 flex flex-col gap-1 px-2">
+                        <span class="text-[9px] text-slate-500 font-semibold font-display uppercase tracking-wider">Fonts in Selected Timeline</span>
+                        <div id="timelineFontsList" class="flex flex-wrap gap-1 mt-1">
+                            <span class="text-[10px] text-slate-600 italic">None Selected</span>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Main Area (Font occurrences) -->
@@ -195,9 +206,14 @@
                         <h2 id="selectedTimelineTitle" class="text-2xl font-display font-bold text-white">Timeline Name</h2>
                         <p class="text-sm text-slate-400">Select a timeline to view its mapped font layout.</p>
                     </div>
-                    <span id="fontCountBadge" class="text-xs px-3 py-1.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 font-semibold font-mono">
-                        0 Fonts Detected
-                    </span>
+                    <div class="flex items-center gap-2">
+                        <span id="fontCountBadge" class="text-xs px-3 py-1.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 font-semibold font-mono">
+                            0 Fonts Detected
+                        </span>
+                        <button id="globalCollapseBtn" onclick="toggleAllCards()" class="hidden text-[10px] px-2.5 py-1 rounded-md bg-slate-900 border border-slate-800 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/50 transition-all duration-150 font-medium select-none">
+                            Collapse All
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Fonts Occurrences list -->
@@ -245,13 +261,15 @@
         const statFonts = document.getElementById('statFonts');
 
         const replaceTargetSelect = document.getElementById('replaceTargetSelect');
-        const replaceInput = document.getElementById('replaceInput');
+        const replaceSelect = document.getElementById('replaceSelect');
         const charLengthIndicator = document.getElementById('charLengthIndicator');
         const lengthWarning = document.getElementById('lengthWarning');
         const replaceBtn = document.getElementById('replaceBtn');
         
         let lastUploadedFile = null;
+        let systemFonts = [];
         let projectData = [];
+        let allExpanded = true;
 
         // Conversion helper: Frames to Timecode (assumes standard 24fps)
         function framesToTimecode(frames, fps = 24) {
@@ -378,11 +396,45 @@
 
             // Populate replace target select
             replaceTargetSelect.innerHTML = '';
-            const sortedUniqueFonts = Array.from(uniqueFonts).sort();
-            sortedUniqueFonts.forEach(font => {
+            
+            const fontStylesMap = {};
+            projectData.forEach(t => {
+                Object.keys(t.fonts).forEach(f => {
+                    if (!fontStylesMap[f]) {
+                        fontStylesMap[f] = new Set();
+                    }
+                    t.fonts[f].forEach(o => {
+                        if (o.style) {
+                            o.style.split(', ').forEach(s => {
+                                if (s && s !== 'Regular') {
+                                    fontStylesMap[f].add(s);
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+            
+            const targetOptions = [];
+            Object.keys(fontStylesMap).sort().forEach(f => {
+                targetOptions.push({
+                    value: f,
+                    text: `${f} (All Styles)`
+                });
+                
+                const styles = Array.from(fontStylesMap[f]).sort();
+                styles.forEach(s => {
+                    targetOptions.push({
+                        value: `${f} - ${s}`,
+                        text: `${f} - ${s}`
+                    });
+                });
+            });
+            
+            targetOptions.forEach(optData => {
                 const opt = document.createElement('option');
-                opt.value = font;
-                opt.text = font;
+                opt.value = optData.value;
+                opt.text = optData.text;
                 replaceTargetSelect.appendChild(opt);
             });
             
@@ -407,12 +459,30 @@
             const fontFamilies = Object.keys(timeline.fonts);
             fontCountBadge.innerText = `${fontFamilies.length} Font${fontFamilies.length !== 1 ? 's' : ''} Mapped`;
             
+            const globalCollapseBtn = document.getElementById('globalCollapseBtn');
+            
             if (fontFamilies.length === 0) {
                 emptyState.classList.remove('hidden');
+                globalCollapseBtn.classList.add('hidden');
+                document.getElementById('timelineFontsList').innerHTML = '<span class="text-[10px] text-slate-500 italic">None</span>';
                 return;
             }
             
             emptyState.classList.add('hidden');
+            globalCollapseBtn.classList.remove('hidden');
+            globalCollapseBtn.innerText = "Collapse All";
+            allExpanded = true;
+            
+            // Populate timeline fonts list under stats card
+            const timelineFontsList = document.getElementById('timelineFontsList');
+            timelineFontsList.innerHTML = '';
+            fontFamilies.sort().forEach(font => {
+                const badge = document.createElement('span');
+                badge.className = 'text-[10px] px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800 text-slate-300 font-medium truncate max-w-[120px]';
+                badge.innerText = font;
+                badge.title = font;
+                timelineFontsList.appendChild(badge);
+            });
             
             fontFamilies.forEach(font => {
                 const occurrences = timeline.fonts[font];
@@ -422,47 +492,58 @@
                 card.className = 'glass-card rounded-xl border border-slate-900 hover:border-slate-800 p-6 flex flex-col gap-4 transition-all duration-200';
                 
                 card.innerHTML = `
-                    <div class="flex items-center justify-between border-b border-slate-900 pb-3">
+                    <div class="flex items-center justify-between border-b border-slate-900 pb-3 cursor-pointer select-none group/hdr" onclick="toggleCardOccurrences(this)">
                         <div class="flex items-baseline gap-2">
-                            <h4 class="text-lg font-display font-semibold text-white tracking-wide">${font}</h4>
+                            <h4 class="text-lg font-display font-semibold text-white tracking-wide group-hover/hdr:text-indigo-400 transition-colors">${font}</h4>
                             <span class="text-[10px] text-slate-500 font-mono font-medium">Font Family</span>
                         </div>
-                        <span class="text-xs px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 font-bold font-mono">
-                            ${occurrences.length} Clip${occurrences.length !== 1 ? 's' : ''}
-                        </span>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 font-bold font-mono">
+                                ${occurrences.length} Clip${occurrences.length !== 1 ? 's' : ''}
+                            </span>
+                            <svg class="h-4 w-4 text-slate-500 group-hover/hdr:text-indigo-400 transition-transform duration-200 transform rotate-180 chevron-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </div>
                     </div>
                     
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-xs text-slate-400">
-                            <thead>
-                                <tr class="text-slate-500 font-semibold border-b border-slate-900/60 pb-2">
-                                    <th class="py-2 px-1">Clip Name / Content</th>
-                                    <th class="py-2">Type</th>
-                                    <th class="py-2">Start Timecode</th>
-                                    <th class="py-2">Duration</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-slate-900/40">
-                                ${occurrences.map(o => `
-                                    <tr class="hover:bg-slate-900/20 transition-colors">
-                                        <td class="py-2.5 px-1 font-medium text-slate-300 max-w-xs truncate" title="${o.clip_name}">
-                                            ${o.clip_name}
-                                        </td>
-                                        <td class="py-2.5">
-                                            <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wider uppercase ${
-                                                o.type.includes('Subtitle') 
-                                                    ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' 
-                                                    : 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
-                                            }">
-                                                ${o.type}
-                                            </span>
-                                        </td>
-                                        <td class="py-2.5 font-mono text-slate-400">${framesToTimecode(o.start)}</td>
-                                        <td class="py-2.5 font-mono text-slate-500">${framesToTimecode(o.duration)}</td>
+                    <div class="table-container transition-all duration-200 overflow-hidden">
+                        <div class="overflow-x-auto pt-1">
+                            <table class="w-full text-left text-xs text-slate-400">
+                                <thead>
+                                    <tr class="text-slate-500 font-semibold border-b border-slate-900/60 pb-2">
+                                        <th class="py-2 px-1">Clip Name / Content</th>
+                                        <th class="py-2">Style</th>
+                                        <th class="py-2">Type</th>
+                                        <th class="py-2">Start Timecode</th>
+                                        <th class="py-2">Duration</th>
                                     </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody class="divide-y divide-slate-900/40">
+                                    ${occurrences.map(o => `
+                                        <tr class="hover:bg-slate-900/20 transition-colors">
+                                            <td class="py-2.5 px-1 font-medium text-slate-300 max-w-xs truncate" title="${o.clip_name}">
+                                                ${o.clip_name}
+                                            </td>
+                                            <td class="py-2.5 text-slate-400 font-mono font-medium">
+                                                ${o.style || 'Regular'}
+                                            </td>
+                                            <td class="py-2.5">
+                                                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wider uppercase ${
+                                                    o.type.includes('Subtitle') 
+                                                        ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' 
+                                                        : 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
+                                                }">
+                                                    ${o.type}
+                                                </span>
+                                            </td>
+                                            <td class="py-2.5 font-mono text-slate-400">${framesToTimecode(o.start)}</td>
+                                            <td class="py-2.5 font-mono text-slate-500">${framesToTimecode(o.duration)}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 `;
                 
@@ -470,9 +551,33 @@
             });
         }
 
+        function toggleCardOccurrences(headerEl) {
+            const container = headerEl.nextElementSibling;
+            const chevron = headerEl.querySelector('.chevron-icon');
+            const isCollapsed = container.classList.toggle('hidden');
+            if (isCollapsed) {
+                chevron.classList.remove('rotate-180');
+            } else {
+                chevron.classList.add('rotate-180');
+            }
+        }
+
+        function toggleAllCards() {
+            const containers = document.querySelectorAll('.table-container');
+            const chevrons = document.querySelectorAll('.chevron-icon');
+            const globalBtn = document.getElementById('globalCollapseBtn');
+            allExpanded = !allExpanded;
+            containers.forEach(c => allExpanded ? c.classList.remove('hidden') : c.classList.add('hidden'));
+            chevrons.forEach(ch => allExpanded ? ch.classList.add('rotate-180') : ch.classList.remove('rotate-180'));
+            globalBtn.innerText = allExpanded ? "Collapse All" : "Expand All";
+        }
+
         function checkFontLengths() {
-            const target = replaceTargetSelect.value || "";
-            const replacement = replaceInput.value || "";
+            let target = replaceTargetSelect.value || "";
+            if (target.includes(" - ")) {
+                target = target.split(" - ")[0].trim();
+            }
+            const replacement = replaceSelect.value || "";
             
             charLengthIndicator.innerText = `${replacement.length} / ${target.length} chars`;
             
@@ -486,7 +591,42 @@
         }
         
         replaceTargetSelect.addEventListener('change', checkFontLengths);
-        replaceInput.addEventListener('input', checkFontLengths);
+        replaceSelect.addEventListener('change', checkFontLengths);
+
+        // Fetch system fonts on page load
+        function loadSystemFonts() {
+            fetch('/system_fonts')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.fonts) {
+                        systemFonts = data.fonts;
+                        populateReplaceSelect();
+                    }
+                })
+                .catch(err => {
+                    console.error("Failed to load OS fonts:", err);
+                    // Fallback to basic fonts if API fails
+                    systemFonts = ["Helvetica Neue", "Arial", "Open Sans", "Inter", "Roboto"];
+                    populateReplaceSelect();
+                });
+        }
+
+        function populateReplaceSelect() {
+            replaceSelect.innerHTML = '';
+            systemFonts.forEach(font => {
+                const opt = document.createElement('option');
+                opt.value = font;
+                opt.text = font;
+                if (font === "Arial") {
+                    opt.selected = true;
+                }
+                replaceSelect.appendChild(opt);
+            });
+            checkFontLengths();
+        }
+
+        // Call loadSystemFonts on init
+        loadSystemFonts();
 
         replaceBtn.addEventListener('click', () => {
             if (!lastUploadedFile) {
@@ -495,15 +635,20 @@
             }
             
             const targetFont = replaceTargetSelect.value;
-            const replacementFont = replaceInput.value.trim();
+            const replacementFont = replaceSelect.value;
             
             if (!targetFont || !replacementFont) {
                 alert("Please specify a replacement font name.");
                 return;
             }
             
-            if (replacementFont.length > targetFont.length) {
-                alert("Replacement font name is longer than target font. Swapping is disabled to protect binary structure.");
+            let targetFamily = targetFont;
+            if (targetFont.includes(" - ")) {
+                targetFamily = targetFont.split(" - ")[0].trim();
+            }
+            
+            if (replacementFont.length > targetFamily.length) {
+                alert("Replacement font name is longer than target font family. Swapping is disabled to protect binary stability.");
                 return;
             }
             
