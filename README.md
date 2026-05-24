@@ -8,15 +8,15 @@ A desktop utility tool to audit, scan, and map font family usage across timeline
 
 ## 🚀 Key Features
 
-* **DRP Container Extraction**: Instantly ingests and extracts zipped `.drp` archives safely into temporary memory.
-* **Automatic Timeline Mapping**: Scans the Media Pool database structure (`MpFolder.xml`) to map friendly timeline names to their underlying sequence XML files in `SeqContainer/`.
+* **DRP Container Extraction**: Instantly ingests and extracts `.drp` files.
+* **Automatic Timeline Mapping**: Scans the Media Pool database structure to map friendly timeline names to their underlying sequence XML files.
 * **Deep Font Auditing**:
   * **Subtitles**: Parses HTML-like styling markup from subtitle generator tracks.
-  * **Rich Text / Fusion Titles**: Decompresses binary properties (`FieldsBlob` and `EffectFiltersBA`) using `zlib` (with fallback raw deflate decompression) to scan formatting properties.
-* **Dynamic Font Face Detection**: Uses both common font database matching and custom regex patterns (like `Font = "FontName"` or `face="FontName"`) to identify custom and proprietary typefaces dynamically.
+  * **Rich Text / Fusion Titles**: Decompresses binary properties 
+* **Dynamic Font Face Detection**
 * **Specificity Deduplication**: Resolves font name substrings to prevent duplicate cards (e.g., matching `"Helvetica Neue LT Std"` and ignoring the redundant `"Helvetica"` and `"Helvetica Neue"`).
-* **Title Content Extraction**: Extracts custom text content (e.g., `"Edited by"`, `"Cinematography"`) to name clips contextually on your dashboard.
-* **Sleek Dark Suite Web UI**: Zinc/Slate dark-mode web dashboard featuring drag-and-drop file uploads, real-time logging, a timeline selector, and detailed instance tables (clip name, start timecode at 24fps, and duration).
+* **Title Content Extraction**
+* **Sleek Dark Suite Web UI**
 
 ---
 
