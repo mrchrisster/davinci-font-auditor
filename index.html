@@ -141,6 +141,13 @@
                         <select id="replaceSelect" class="w-full rounded-lg bg-slate-950 border border-slate-800 text-slate-200 py-2 px-3 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500">
                             <!-- Populated dynamically with OS system fonts -->
                         </select>
+                    </div>
+
+                    <div id="replaceStyleContainer" class="flex flex-col gap-1">
+                        <label class="text-[10px] text-slate-400 font-medium">Replacement Style / Weight</label>
+                        <select id="replaceStyleSelect" class="w-full rounded-lg bg-slate-950 border border-slate-800 text-slate-200 py-2 px-3 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                            <!-- Populated dynamically based on selected family -->
+                        </select>
                         <span id="lengthWarning" class="hidden text-[9px] text-rose-400 font-medium mt-1 leading-tight">
                             Warning: Replacement font must be equal or shorter in length than target font.
                         </span>
@@ -262,12 +269,14 @@
 
         const replaceTargetSelect = document.getElementById('replaceTargetSelect');
         const replaceSelect = document.getElementById('replaceSelect');
+        const replaceStyleSelect = document.getElementById('replaceStyleSelect');
         const charLengthIndicator = document.getElementById('charLengthIndicator');
         const lengthWarning = document.getElementById('lengthWarning');
         const replaceBtn = document.getElementById('replaceBtn');
         
         let lastUploadedFile = null;
         let systemFonts = [];
+        let systemFontStyles = {};
         let projectData = [];
         let allExpanded = true;
 
@@ -573,16 +582,38 @@
         }
 
         function checkFontLengths() {
-            let target = replaceTargetSelect.value || "";
-            if (target.includes(" - ")) {
-                target = target.split(" - ")[0].trim();
+            const targetVal = replaceTargetSelect.value || "";
+            const replacementVal = replaceSelect.value || "";
+            const replacementStyle = replaceStyleSelect.value || "";
+            
+            let targetFamily = targetVal;
+            let targetStyle = "";
+            if (targetVal.includes(" - ")) {
+                const parts = targetVal.split(" - ");
+                targetFamily = parts[0].trim();
+                targetStyle = parts[1].trim();
             }
-            const replacement = replaceSelect.value || "";
             
-            charLengthIndicator.innerText = `${replacement.length} / ${target.length} chars`;
+            // Check family length
+            const familyValid = replacementVal.length <= targetFamily.length;
             
-            if (replacement.length > target.length) {
+            // Check style length (only if targeting a specific style)
+            let styleValid = true;
+            if (targetStyle && replacementStyle) {
+                styleValid = replacementStyle.length <= targetStyle.length;
+            }
+            
+            charLengthIndicator.innerText = `${replacementVal.length}/${targetFamily.length} chars${targetStyle ? ` (Style: ${replacementStyle.length}/${targetStyle.length})` : ''}`;
+            
+            if (!familyValid || !styleValid) {
                 lengthWarning.classList.remove('hidden');
+                if (!familyValid && !styleValid) {
+                    lengthWarning.innerText = "Warning: Both replacement font family and style name must be equal or shorter than target.";
+                } else if (!familyValid) {
+                    lengthWarning.innerText = "Warning: Replacement font family must be equal or shorter than target family.";
+                } else {
+                    lengthWarning.innerText = `Warning: Replacement style ("${replacementStyle}") must be equal or shorter than target style ("${targetStyle}").`;
+                }
                 replaceBtn.disabled = true;
             } else {
                 lengthWarning.classList.add('hidden');
@@ -590,8 +621,11 @@
             }
         }
         
-        replaceTargetSelect.addEventListener('change', checkFontLengths);
-        replaceSelect.addEventListener('change', checkFontLengths);
+        replaceTargetSelect.addEventListener('change', () => {
+            populateReplaceStyleSelect();
+        });
+        replaceSelect.addEventListener('change', populateReplaceStyleSelect);
+        replaceStyleSelect.addEventListener('change', checkFontLengths);
 
         // Fetch system fonts on page load
         function loadSystemFonts() {
@@ -600,6 +634,7 @@
                 .then(data => {
                     if (data.fonts) {
                         systemFonts = data.fonts;
+                        systemFontStyles = data.styles || {};
                         populateReplaceSelect();
                     }
                 })
@@ -607,6 +642,13 @@
                     console.error("Failed to load OS fonts:", err);
                     // Fallback to basic fonts if API fails
                     systemFonts = ["Helvetica Neue", "Arial", "Open Sans", "Inter", "Roboto"];
+                    systemFontStyles = {
+                        "Helvetica Neue": ["Regular", "Bold", "Italic", "Medium"],
+                        "Arial": ["Regular", "Bold", "Italic"],
+                        "Open Sans": ["Regular", "Bold"],
+                        "Inter": ["Regular", "Bold"],
+                        "Roboto": ["Regular", "Bold"]
+                    };
                     populateReplaceSelect();
                 });
         }
@@ -621,6 +663,29 @@
                     opt.selected = true;
                 }
                 replaceSelect.appendChild(opt);
+            });
+            populateReplaceStyleSelect();
+        }
+
+        function populateReplaceStyleSelect() {
+            replaceStyleSelect.innerHTML = '';
+            const selectedFamily = replaceSelect.value;
+            const styles = systemFontStyles[selectedFamily] || ["Regular"];
+            styles.forEach(style => {
+                const opt = document.createElement('option');
+                opt.value = style;
+                opt.text = style;
+                // Automatically try to match target font style if possible
+                const targetVal = replaceTargetSelect.value || "";
+                if (targetVal.includes(" - ")) {
+                    const targetStyle = targetVal.split(" - ")[1].trim();
+                    if (style.toLowerCase() === targetStyle.toLowerCase()) {
+                        opt.selected = true;
+                    }
+                } else if (style === "Regular") {
+                    opt.selected = true;
+                }
+                replaceStyleSelect.appendChild(opt);
             });
             checkFontLengths();
         }
@@ -647,10 +712,15 @@
                 targetFamily = targetFont.split(" - ")[0].trim();
             }
             
-            if (replacementFont.length > targetFamily.length) {
-                alert("Replacement font name is longer than target font family. Swapping is disabled to protect binary stability.");
-                return;
+            const replacementStyle = replaceStyleSelect.value || "";
+            
+            // Check style length if targeting a specific style
+            let targetStyle = "";
+            if (targetFont.includes(" - ")) {
+                targetStyle = targetFont.split(" - ")[1].trim();
             }
+            
+            // Variable length replacement is fully supported now
             
             const filterType = document.querySelector('input[name="replaceFilter"]:checked').value;
             
@@ -658,13 +728,14 @@
             terminalLogs.innerHTML = '';
             terminalContainer.classList.remove('hidden');
             loaderStatus.innerText = "Processing Font Replacement...";
-            logMessage(`Starting project-wide font swap: '${targetFont}' -> '${replacementFont}' (Filter: ${filterType})`, 'progress');
+            logMessage(`Starting project-wide font swap: '${targetFont}' -> '${replacementFont} - ${replacementStyle}' (Filter: ${filterType})`, 'progress');
             logMessage(`Compiling DRP container and processing sequence files...`, 'info');
             
             const formData = new FormData();
             formData.append('file', lastUploadedFile);
             formData.append('target_font', targetFont);
             formData.append('replacement_font', replacementFont);
+            formData.append('replacement_style', replacementStyle);
             formData.append('filter_type', filterType);
             
             fetch('/replace', {
