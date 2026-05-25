@@ -186,67 +186,105 @@ def extract_text_and_fonts_from_zstd(hex_str):
     # Extract title text using structural parsing
     title_text = extract_title_text_from_decompressed(decompressed)
     
-    # Extract all longer strings for fonts, colors, template
-    strings = extract_utf16le_strings(decompressed, min_length=2)
-    
     families = []
     styles = []
     colors = []
     template_name = ""
     
-    # Known non-text structural strings to skip
-    skip_strings = {'ba`', '8J', 'JJ', 'JJJ', 'JJJJJJJ', '||'}
-    # Known number-prefix patterns for font style IDs (e.g., "67 Medium Condensed")
-    font_style_pattern = re.compile(r'^\d+\s+.+')
-    
-    font_indicators_nocase = ['neue', 'sans', 'serif', 'mono', 'bold', 'regular', 'medium', 'light', 'condensed', 'helvetica', 'arial', 'roboto', 'inter']
-    font_indicators_case = ['LT', 'Std', 'Cn', 'Lt', 'Med']
-    
-    for offset, s in strings:
-        s_stripped = s.strip()
-        if not s_stripped or s_stripped in skip_strings or s_stripped == title_text:
-            continue
+    # First, try high-accuracy QFont block parsing on ZSTD decompressed data
+    try:
+        nodes = parse_protobuf(decompressed)
+        
+        def find_qfont_blocks(nodes_list):
+            for node in nodes_list:
+                if node.wire_type == 2:
+                    if node.children is not None:
+                        find_qfont_blocks(node.children)
+                    else:
+                        idx = 0
+                        while True:
+                            idx = node.raw_data.find(b'\x00\x00TB', idx)
+                            if idx < 0:
+                                break
+                            if idx >= 8:
+                                res = find_custom_block_at_sep(node.raw_data, idx)
+                                if res is not None:
+                                    _, _, fam = res
+                                    style_len = struct.unpack('<I', node.raw_data[idx+4 : idx+8])[0]
+                                    sty_str_len = style_len - 4
+                                    sty = node.raw_data[idx+8 : idx+8+sty_str_len].decode('utf-16-le', errors='replace')
+                                    
+                                    families.append(fam)
+                                    
+                                    cleaned = clean_and_validate_style(sty)
+                                    styles.append(cleaned if cleaned else sty)
+                            idx += 4
+                            
+        find_qfont_blocks(nodes)
+    except Exception as e:
+        print(f"[BACKEND] ZSTD Protobuf QFont extraction failed: {e}")
+        
+    # If QFont parsing did not extract any families, fallback to heuristic extraction
+    if not families:
+        strings = extract_utf16le_strings(decompressed, min_length=2)
+        
+        skip_strings = {'ba`', '8J', 'JJ', 'JJJ', 'JJJJJJJ', '||'}
+        font_style_pattern = re.compile(r'^\d+\s+.+')
+        
+        font_indicators_nocase = ['neue', 'sans', 'serif', 'mono', 'bold', 'regular', 'medium', 'light', 'condensed', 'helvetica', 'arial', 'roboto', 'inter']
+        font_indicators_case = ['LT', 'Std', 'Cn', 'Lt', 'Med']
+        
+        for offset, s in strings:
+            s_stripped = s.strip()
+            if not s_stripped or s_stripped in skip_strings or s_stripped == title_text:
+                continue
+                
+            if s_stripped.startswith('#'):
+                colors.append(s_stripped)
+                continue
             
-        # Color values start with #
-        if s_stripped.startswith('#'):
-            colors.append(s_stripped)
-            continue
-        
-        # First, check style weight patterns (starts with number e.g. "67 Medium Condensed")
-        if font_style_pattern.match(s_stripped):
-            style_parts = s_stripped.split(' ', 1)
-            if len(style_parts) == 2:
-                cleaned = clean_and_validate_style(style_parts[1])
-                if cleaned:
-                    styles.append(cleaned)
-            continue
+            if font_style_pattern.match(s_stripped):
+                style_parts = s_stripped.split(' ', 1)
+                if len(style_parts) == 2:
+                    cleaned = clean_and_validate_style(style_parts[1])
+                    if cleaned:
+                        styles.append(cleaned)
+                continue
+                
+            cleaned_style = clean_and_validate_style(s_stripped)
+            if cleaned_style:
+                styles.append(cleaned_style)
+                continue
             
-        # Second, check if the string matches a standalone style name (like "Bold" or "Medium")
-        cleaned_style = clean_and_validate_style(s_stripped)
-        if cleaned_style:
-            styles.append(cleaned_style)
-            continue
-        
-        # Third, check if it looks like a font family name
-        is_font = False
-        if len(s_stripped) <= 50 and not any(char in s_stripped for char in [',', '.', ';', '!', '?']):
-            if any(ind in s_stripped.lower() for ind in font_indicators_nocase):
-                is_font = True
-            elif any(re.search(r'\b' + re.escape(ind) + r'\b', s_stripped) for ind in font_indicators_case):
-                is_font = True
-        
-        if is_font:
-            families.append(s_stripped)
-            continue
-        
-        # Check if it's a template name
-        template_indicators = ['Basic Title', 'Lower Third', 'Scroll']
-        is_template = any(ind.lower() in s_stripped.lower() for ind in template_indicators)
-        if is_template:
-            template_name = s_stripped
-            continue
+            is_font = False
+            if len(s_stripped) <= 50 and not any(char in s_stripped for char in [',', '.', ';', '!', '?']):
+                if any(ind in s_stripped.lower() for ind in font_indicators_nocase):
+                    is_font = True
+                elif any(re.search(r'\b' + re.escape(ind) + r'\b', s_stripped) for ind in font_indicators_case):
+                    is_font = True
+            
+            if is_font:
+                families.append(s_stripped)
+                continue
+                
+            template_indicators = ['Basic Title', 'Lower Third', 'Scroll']
+            is_template = any(ind.lower() in s_stripped.lower() for ind in template_indicators)
+            if is_template:
+                template_name = s_stripped
+                continue
+    else:
+        # Extract colors and template names using standard strings scan
+        strings = extract_utf16le_strings(decompressed, min_length=2)
+        for offset, s in strings:
+            s_stripped = s.strip()
+            if s_stripped.startswith('#'):
+                colors.append(s_stripped)
+            else:
+                template_indicators = ['Basic Title', 'Lower Third', 'Scroll']
+                is_template = any(ind.lower() in s_stripped.lower() for ind in template_indicators)
+                if is_template:
+                    template_name = s_stripped
     
-    # Deduplicate lists
     unique_families = []
     for f in families:
         if f not in unique_families:
@@ -256,10 +294,8 @@ def extract_text_and_fonts_from_zstd(hex_str):
     for s in styles:
         if s not in unique_styles:
             unique_styles.append(s)
-    
-    # Deduplicate colors
+            
     unique_colors = list(set(colors))
-    
     return title_text, unique_families, unique_styles, unique_colors, template_name
 
 def extract_text_and_fonts_from_rich_blob(hex_str):
@@ -267,7 +303,7 @@ def extract_text_and_fonts_from_rich_blob(hex_str):
     
     Returns (title_text, families_list, styles_list).
     """
-    # Try ZSTD first (preferred method)
+    # Try ZSTD first
     if HAS_ZSTD and hex_str and len(hex_str) > 26:
         try:
             blob_bytes = bytes.fromhex(hex_str)
@@ -279,12 +315,57 @@ def extract_text_and_fonts_from_rich_blob(hex_str):
                     return title_text, families, styles
         except Exception as e:
             print(f"[BACKEND] ZSTD extraction failed, falling back: {e}")
-    
-    # Fallback: legacy zlib-based heuristic extraction
-    fonts = set()
-    longest_text = ""
+            
+    # Fallback: legacy zlib-based extraction
     decomp = decompress_blob(hex_str)
     if decomp:
+        # Try Protobuf QFont extraction on zlib decompressed bytes
+        try:
+            nodes = parse_protobuf(decomp)
+            z_families = []
+            z_styles = []
+            
+            def find_qfont_blocks(nodes_list):
+                for node in nodes_list:
+                    if node.wire_type == 2:
+                        if node.children is not None:
+                            find_qfont_blocks(node.children)
+                        else:
+                            idx = 0
+                            while True:
+                                idx = node.raw_data.find(b'\x00\x00TB', idx)
+                                if idx < 0:
+                                    break
+                                if idx >= 8:
+                                    res = find_custom_block_at_sep(node.raw_data, idx)
+                                    if res is not None:
+                                        _, _, fam = res
+                                        style_len = struct.unpack('<I', node.raw_data[idx+4 : idx+8])[0]
+                                        sty_str_len = style_len - 4
+                                        sty = node.raw_data[idx+8 : idx+8+sty_str_len].decode('utf-16-le', errors='replace')
+                                        z_families.append(fam)
+                                        cleaned = clean_and_validate_style(sty)
+                                        z_styles.append(cleaned if cleaned else sty)
+                                idx += 4
+            find_qfont_blocks(nodes)
+            if z_families:
+                text_title = extract_title_text_from_decompressed(decomp)
+                # Deduplicate
+                unique_f = []
+                for f in z_families:
+                    if f not in unique_f:
+                        unique_f.append(f)
+                unique_s = []
+                for s in z_styles:
+                    if s not in unique_s:
+                        unique_s.append(s)
+                return text_title, unique_f, unique_s
+        except Exception:
+            pass
+            
+        # Hard fallback to heuristic parsing
+        fonts = set()
+        longest_text = ""
         text_utf8 = decomp.decode('utf-8', errors='ignore')
         text_utf16 = decomp.decode('utf-16le', errors='ignore')
         
@@ -341,16 +422,17 @@ def extract_text_and_fonts_from_rich_blob(hex_str):
             if unique_strings:
                 longest_text = unique_strings[0]
                 
-    families = []
-    styles = []
-    for f in fonts:
-        cleaned_style = clean_and_validate_style(f)
-        if cleaned_style:
-            styles.append(cleaned_style)
-        else:
-            families.append(f)
-            
-    return longest_text, families, styles
+        families = []
+        styles = []
+        for f in fonts:
+            cleaned_style = clean_and_validate_style(f)
+            if cleaned_style:
+                styles.append(cleaned_style)
+            else:
+                families.append(f)
+                
+        return longest_text, families, styles
+    return "", [], []
 
 def extract_fonts_from_blob(hex_str):
     """Wrapper for backwards compatibility. Returns only font families (styles excluded)."""
@@ -611,12 +693,294 @@ def parse_drp(drp_path):
         
     return timelines
 
-def replace_font_in_blob(hex_str, target_font, replacement_font):
-    """Helper to perform binary-safe font replacement inside ZSTD & zlib streams."""
+# Protobuf and custom QFont serialized structures utilities
+def decode_varint(data, offset):
+    result = 0
+    shift = 0
+    start = offset
+    while offset < len(data):
+        byte = data[offset]
+        result |= (byte & 0x7F) << shift
+        offset += 1
+        shift += 7
+        if not (byte & 0x80):
+            return result, offset - start
+        if shift > 63:
+            return None, 0
+    return None, 0
+
+def encode_varint(val):
+    res = bytearray()
+    while True:
+        towrite = val & 0x7f
+        val >>= 7
+        if val:
+            res.append(towrite | 0x80)
+        else:
+            res.append(towrite)
+            break
+    return bytes(res)
+
+class ProtoNode:
+    def __init__(self, field_number, wire_type, raw_data):
+        self.field_number = field_number
+        self.wire_type = wire_type
+        self.raw_data = raw_data
+        self.children = None
+
+def parse_protobuf(data):
+    nodes = []
+    offset = 0
+    while offset < len(data):
+        tag, tag_size = decode_varint(data, offset)
+        if tag is None:
+            break
+        field_number = tag >> 3
+        wire_type = tag & 0x07
+        offset += tag_size
+        
+        if wire_type == 0:
+            val, val_size = decode_varint(data, offset)
+            nodes.append(ProtoNode(field_number, wire_type, data[offset:offset+val_size]))
+            offset += val_size
+        elif wire_type == 1:
+            nodes.append(ProtoNode(field_number, wire_type, data[offset:offset+8]))
+            offset += 8
+        elif wire_type == 5:
+            nodes.append(ProtoNode(field_number, wire_type, data[offset:offset+4]))
+            offset += 4
+        elif wire_type == 2:
+            length, length_size = decode_varint(data, offset)
+            offset += length_size
+            payload = data[offset:offset+length]
+            offset += length
+            
+            node = ProtoNode(field_number, wire_type, payload)
+            try:
+                if len(payload) > 0:
+                    sub_nodes = parse_protobuf(payload)
+                    serialized_sub = serialize_nodes(sub_nodes)
+                    if len(serialized_sub) == len(payload):
+                        node.children = sub_nodes
+            except Exception:
+                pass
+            nodes.append(node)
+        else:
+            raise ValueError(f"Unknown wire type {wire_type}")
+    return nodes
+
+def serialize_nodes(nodes):
+    res = bytearray()
+    for node in nodes:
+        tag = (node.field_number << 3) | node.wire_type
+        res.extend(encode_varint(tag))
+        if node.wire_type == 2:
+            if node.children is not None:
+                payload = serialize_nodes(node.children)
+            else:
+                payload = node.raw_data
+            res.extend(encode_varint(len(payload)))
+            res.extend(payload)
+        else:
+            res.extend(node.raw_data)
+    return bytes(res)
+
+STYLE_EXTRA_MAP = {
+    "regular": b"",
+    "normal": b"",
+    "roman": b"",
+    "book": b"",
+    "italic": b"\x01",
+    "oblique": b"\x01",
+    "bold": b"\x4b\x00",
+    "bold italic": b"\x4b\x00\x01",
+    "bolditalic": b"\x4b\x00\x01",
+    "medium": b"\x39\x00",
+    "medium italic": b"\x39\x00\x01",
+    "semibold": b"\x3f\x00",
+    "semi bold": b"\x3f\x00",
+    "demibold": b"\x3f\x00",
+    "light": b"\x19\x00",
+    "light italic": b"\x19\x00\x01",
+    "extralight": b"\x0c\x00",
+    "extra light": b"\x0c\x00",
+    "thin": b"\x00\x00",
+    "black": b"\x57\x00",
+    "heavy": b"\x57\x00"
+}
+
+def get_style_extra_bytes(style_name):
+    style_lower = style_name.lower().strip()
+    if not style_lower:
+        return b""
+    if style_lower in STYLE_EXTRA_MAP:
+        return STYLE_EXTRA_MAP[style_lower]
+    if "bold" in style_lower and "italic" in style_lower:
+        return STYLE_EXTRA_MAP["bold italic"]
+    if "medium" in style_lower and "italic" in style_lower:
+        return STYLE_EXTRA_MAP["medium italic"]
+    if "light" in style_lower and "italic" in style_lower:
+        return STYLE_EXTRA_MAP["light italic"]
+    if "bold" in style_lower:
+        return STYLE_EXTRA_MAP["bold"]
+    if "medium" in style_lower:
+        return STYLE_EXTRA_MAP["medium"]
+    if "semibold" in style_lower or "semi bold" in style_lower or "demibold" in style_lower:
+        return STYLE_EXTRA_MAP["semibold"]
+    if "light" in style_lower:
+        return STYLE_EXTRA_MAP["light"]
+    if "italic" in style_lower or "oblique" in style_lower:
+        return STYLE_EXTRA_MAP["italic"]
+    if "thin" in style_lower:
+        return STYLE_EXTRA_MAP["thin"]
+    if "black" in style_lower or "heavy" in style_lower:
+        return STYLE_EXTRA_MAP["black"]
+    return b""
+
+def compute_qfont_trailing_flags(style_name):
+    """Compute the 4 trailing bytes of a QFont block based on style properties."""
+    flags = 0xFF
+    style_lower = style_name.lower().strip()
+    if 'italic' in style_lower or 'oblique' in style_lower:
+        flags &= ~(1 << 4)  # Clear bit 4
+    if any(w in style_lower for w in ['bold', 'black', 'heavy', 'semibold', 'semi bold', 'demibold']):
+        flags &= ~(1 << 3)  # Clear bit 3
+    return b'\xf8' + bytes([flags]) + b'\x16\x03'
+
+def rebuild_custom_structure(custom_bytes, target_fam, replacement_fam, target_sty, replacement_sty):
+    family_len = struct.unpack('<I', custom_bytes[4:8])[0]
+    fam_str_len = family_len - 4
+    
+    sep_offset = 8 + fam_str_len
+    sep = custom_bytes[sep_offset : sep_offset + 4]
+    
+    style_len_offset = sep_offset + 4
+    style_len = struct.unpack('<I', custom_bytes[style_len_offset : style_len_offset + 4])[0]
+    sty_str_len = style_len - 4
+    
+    color_marker = b'#\x00'
+    idx_color_marker = custom_bytes.find(color_marker, style_len_offset + 4 + sty_str_len)
+    if idx_color_marker >= 0:
+        color_prefix_offset = idx_color_marker - 4
+        rest = custom_bytes[color_prefix_offset :]
+    else:
+        found_offset = -1
+        for offset in range(0, 5):
+            test_pos = style_len_offset + 4 + sty_str_len + offset
+            if test_pos + 4 <= len(custom_bytes):
+                val = struct.unpack('<I', custom_bytes[test_pos : test_pos + 4])[0]
+                if val in [14, 18, 22, 26]:
+                    found_offset = test_pos
+                    break
+        if found_offset >= 0:
+            color_prefix_offset = found_offset
+            rest = custom_bytes[color_prefix_offset :]
+        else:
+            color_prefix_offset = len(custom_bytes)
+            rest = b""
+            
+    new_fam_bytes = replacement_fam.encode('utf-16-le')
+    new_fam_len = len(new_fam_bytes) + 4
+    new_fam_prefix = struct.pack('<I', new_fam_len)
+    
+    new_sty_bytes = replacement_sty.encode('utf-16-le')
+    new_sty_len = len(new_sty_bytes) + 4
+    new_sty_prefix = struct.pack('<I', new_sty_len)
+    
+    if target_sty.lower() == replacement_sty.lower():
+        new_style_extra = custom_bytes[style_len_offset + 4 + sty_str_len : color_prefix_offset]
+    else:
+        new_style_extra = get_style_extra_bytes(replacement_sty)
+        
+    # The last 4 bytes of rest are QFont trailing flags, which must be recomputed
+    color_data = rest[:-4] if len(rest) >= 4 else b""
+    new_trailing = compute_qfont_trailing_flags(replacement_sty)
+    
+    new_payload = (
+        new_fam_prefix + new_fam_bytes +
+        sep +
+        new_sty_prefix + new_sty_bytes +
+        new_style_extra +
+        color_data +
+        new_trailing
+    )
+    
+    new_total_size = len(new_payload) + 4
+    return struct.pack('<I', new_total_size) + new_payload
+
+def find_custom_block_at_sep(raw_data, idx):
+    # Scan backwards to find the family length prefix (L must be even and >= 8)
+    for L in range(8, 200, 2):
+        if idx - L >= 4:
+            val = struct.unpack('<I', raw_data[idx - L : idx - L + 4])[0]
+            if val == L:
+                family_len = L
+                fam_str_len = L - 4
+                fam_start = idx - fam_str_len
+                fam_str = raw_data[fam_start:idx].decode('utf-16-le', errors='replace')
+                
+                total_size_offset = idx - L - 4
+                total_size_val = struct.unpack('<I', raw_data[total_size_offset : total_size_offset + 4])[0]
+                return total_size_offset, total_size_val, fam_str
+    return None
+
+def modify_proto_tree(nodes, target_family, replacement_family, target_style=None, replacement_style=None):
+    modified_any = False
+    
+    for node in nodes:
+        if node.wire_type == 2:
+            if node.children is not None:
+                if modify_proto_tree(node.children, target_family, replacement_family, target_style, replacement_style):
+                    modified_any = True
+            else:
+                idx = 0
+                while True:
+                    idx = node.raw_data.find(b'\x00\x00TB', idx)
+                    if idx < 0:
+                        break
+                    if idx >= 8:
+                        try:
+                            res = find_custom_block_at_sep(node.raw_data, idx)
+                            if res is not None:
+                                total_size_offset, total_size_val, fam_str = res
+                                if 50 <= total_size_val <= 500:
+                                    if target_family.lower() in fam_str.lower() or fam_str.lower() in target_family.lower():
+                                        custom_bytes = node.raw_data[total_size_offset : total_size_offset + total_size_val]
+                                        
+                                        style_len_offset = idx + 4
+                                        style_len = struct.unpack('<I', node.raw_data[style_len_offset : style_len_offset+4])[0]
+                                        sty_str_len = style_len - 4
+                                        current_style = node.raw_data[style_len_offset+4 : style_len_offset+4+sty_str_len].decode('utf-16-le', errors='replace')
+                                        
+                                        if target_style and target_style.lower() not in current_style.lower():
+                                            idx += 4
+                                            continue
+                                            
+                                        r_style = replacement_style if replacement_style else current_style
+                                        new_custom_bytes = rebuild_custom_structure(
+                                            custom_bytes, target_family, replacement_family, current_style, r_style
+                                        )
+                                        
+                                        node.raw_data = node.raw_data[:total_size_offset] + new_custom_bytes + node.raw_data[total_size_offset + total_size_val:]
+                                        
+                                        outer_size = len(node.raw_data)
+                                        node.raw_data = struct.pack('<I', outer_size) + node.raw_data[4:]
+                                        modified_any = True
+                                        
+                                        idx = total_size_offset + len(new_custom_bytes)
+                                        continue
+                        except Exception as e:
+                            print(f"[BACKEND] Error scanning QFont block: {e}")
+                    idx += 4
+                    
+    return modified_any
+
+def replace_font_in_blob(hex_str, target_font, replacement_font, target_style=None, replacement_style=None):
+    """Helper to perform binary-safe font and style replacement inside ZSTD & zlib streams."""
     if not hex_str:
         return hex_str
     
-    # 1. Try ZSTD replacement first (preferred method)
+    # 1. Try ZSTD replacement first (preferred method using Protobuf aware rebuilder)
     if HAS_ZSTD and len(hex_str) > 26:
         try:
             blob_bytes = bytes.fromhex(hex_str)
@@ -626,20 +990,54 @@ def replace_font_in_blob(hex_str, target_font, replacement_font):
                 
                 decomp = decompress_zstd_blob(hex_str)
                 if decomp:
+                    try:
+                        nodes = parse_protobuf(decomp)
+                        replaced_any = modify_proto_tree(
+                            nodes, 
+                            target_font, 
+                            replacement_font, 
+                            target_style, 
+                            replacement_style
+                        )
+                        if replaced_any:
+                            modified_decomp = serialize_nodes(nodes)
+                            dctx = zstandard.ZstdCompressor()
+                            compressed = dctx.compress(modified_decomp)
+                            header = struct.pack('>II', 2, len(compressed) + 1)
+                            type_marker = b'\x81'
+                            return (header + type_marker + compressed).hex().upper()
+                    except Exception as e:
+                        print(f"[BACKEND] ZSTD Protobuf replacement failed: {e}")
+                        
+                    # ZSTD fallback (original padding logic)
                     target_bytes = target_font.encode('utf-16-le')
                     replacement_bytes = replacement_font.encode('utf-16-le')
-                    
-                    # Pad replacement to match target byte length
                     if len(replacement_bytes) < len(target_bytes):
                         padded = replacement_bytes + b'\x00' * (len(target_bytes) - len(replacement_bytes))
                     else:
                         padded = replacement_bytes[:len(target_bytes)]
                         
+                    modified_decomp = decomp
+                    replaced_any = False
                     if target_bytes in decomp:
-                        modified_decomp = decomp.replace(target_bytes, padded)
+                        modified_decomp = modified_decomp.replace(target_bytes, padded)
+                        replaced_any = True
+                        
+                    if target_style and replacement_style:
+                        t_style_bytes = target_style.encode('utf-16-le')
+                        r_style_bytes = replacement_style.encode('utf-16-le')
+                        if len(r_style_bytes) < len(t_style_bytes):
+                            padded_style = r_style_bytes + b'\x00' * (len(t_style_bytes) - len(r_style_bytes))
+                        else:
+                            padded_style = r_style_bytes[:len(t_style_bytes)]
+                        if t_style_bytes in modified_decomp:
+                            modified_decomp = modified_decomp.replace(t_style_bytes, padded_style)
+                            replaced_any = True
+                            
+                    if replaced_any:
                         dctx = zstandard.ZstdCompressor()
                         compressed = dctx.compress(modified_decomp)
-                        header = struct.pack('>II', 2, len(compressed))
+                        header = struct.pack('>II', 2, len(compressed) + 1)
                         type_marker = b'\x81'
                         return (header + type_marker + compressed).hex().upper()
         except Exception as e:
@@ -655,6 +1053,26 @@ def replace_font_in_blob(hex_str, target_font, replacement_font):
                 try:
                     decomp = zlib.decompress(blob_bytes[offset:], wbits)
                     if decomp:
+                        # Try Protobuf rebuilder on zlib first
+                        try:
+                            nodes = parse_protobuf(decomp)
+                            replaced_any = modify_proto_tree(
+                                nodes, 
+                                target_font, 
+                                replacement_font, 
+                                target_style, 
+                                replacement_style
+                            )
+                            if replaced_any:
+                                modified_decomp = serialize_nodes(nodes)
+                                comp_obj = zlib.compressobj(wbits=wbits)
+                                compressed = comp_obj.compress(modified_decomp) + comp_obj.flush()
+                                new_bytes = blob_bytes[:offset] + compressed
+                                return new_bytes.hex().upper()
+                        except Exception:
+                            pass
+                            
+                        # Fallback to simple replace
                         target_utf16 = target_font.encode('utf-16-le')
                         replacement_utf16 = replacement_font.encode('utf-16-le')
                         target_utf8 = target_font.encode('utf-8')
@@ -679,6 +1097,27 @@ def replace_font_in_blob(hex_str, target_font, replacement_font):
                             modified_decomp = modified_decomp.replace(target_utf8, padded)
                             replaced_any = True
                             
+                        if target_style and replacement_style:
+                            t_style_u16 = target_style.encode('utf-16-le')
+                            r_style_u16 = replacement_style.encode('utf-16-le')
+                            if t_style_u16 in modified_decomp:
+                                if len(r_style_u16) < len(t_style_u16):
+                                    padded_style = r_style_u16 + b'\x00' * (len(t_style_u16) - len(r_style_u16))
+                                else:
+                                    padded_style = r_style_u16[:len(t_style_u16)]
+                                modified_decomp = modified_decomp.replace(t_style_u16, padded_style)
+                                replaced_any = True
+                                
+                            t_style_u8 = target_style.encode('utf-8')
+                            r_style_u8 = replacement_style.encode('utf-8')
+                            if t_style_u8 in modified_decomp:
+                                if len(r_style_u8) < len(t_style_u8):
+                                    padded_style = r_style_u8 + b'\x00' * (len(t_style_u8) - len(r_style_u8))
+                                else:
+                                    padded_style = r_style_u8[:len(t_style_u8)]
+                                modified_decomp = modified_decomp.replace(t_style_u8, padded_style)
+                                replaced_any = True
+                            
                         if replaced_any:
                             comp_obj = zlib.compressobj(wbits=wbits)
                             compressed = comp_obj.compress(modified_decomp) + comp_obj.flush()
@@ -691,8 +1130,8 @@ def replace_font_in_blob(hex_str, target_font, replacement_font):
         
     return hex_str
 
-def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filter_type, target_style=None):
-    """Processes a DRP file, replacing target_family instances with replacement_font, filtered by type and optional style.
+def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filter_type, target_style=None, replacement_style=None):
+    """Processes a DRP file, replacing target_family instances with replacement_font, filtered by type, style, and optional replacement style.
     
     Returns the path to the newly re-packaged DRP file.
     """
@@ -743,7 +1182,7 @@ def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filt
                                         node = g.find(tag)
                                         if node is not None and node.text:
                                             orig_text = node.text.strip()
-                                            new_text = replace_font_in_blob(orig_text, target_family, replacement_font)
+                                            new_text = replace_font_in_blob(orig_text, target_family, replacement_font, target_style, replacement_style)
                                             if orig_text != new_text:
                                                 node.text = new_text
                                                 modified = True
@@ -758,7 +1197,7 @@ def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filt
                                     node = track.find(tag)
                                     if node is not None and node.text:
                                         orig_text = node.text.strip()
-                                        new_text = replace_font_in_blob(orig_text, target_family, replacement_font)
+                                        new_text = replace_font_in_blob(orig_text, target_family, replacement_font, None, None)
                                         if orig_text != new_text:
                                             node.text = new_text
                                             modified = True
@@ -778,7 +1217,7 @@ def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filt
                                         node = g.find(tag)
                                         if node is not None and node.text:
                                             orig_text = node.text.strip()
-                                            new_text = replace_font_in_blob(orig_text, target_family, replacement_font)
+                                            new_text = replace_font_in_blob(orig_text, target_family, replacement_font, target_style, replacement_style)
                                             if orig_text != new_text:
                                                 node.text = new_text
                                                 modified = True
@@ -832,23 +1271,33 @@ def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filt
         except Exception:
             pass
 
-def get_system_fonts():
-    """Retrieves all unique user-facing system font families installed on the OS."""
+def get_system_fonts_with_styles():
+    """Retrieves all unique user-facing system font families and their styles installed on the OS."""
     import platform
     import subprocess
+    import re
     
-    fonts = set(FONTS_DB) # Start with base fonts
+    font_families = set(FONTS_DB)  # Start with base fonts
+    font_styles_map = {f: ["Regular"] for f in FONTS_DB}
     
     # 1. macOS (Darwin)
     if platform.system() == "Darwin":
         try:
             out = subprocess.check_output(['system_profiler', 'SPFontsDataType'], text=True, errors='replace')
+            current_family = None
             for line in out.splitlines():
                 if 'Family:' in line:
-                    name = line.split('Family:', 1)[1].strip()
-                    # Skip private fallback fonts starting with a dot
-                    if name and not name.startswith('.'):
-                        fonts.add(name)
+                    current_family = line.split('Family:', 1)[1].strip()
+                    if current_family and not current_family.startswith('.'):
+                        font_families.add(current_family)
+                        if current_family not in font_styles_map:
+                            font_styles_map[current_family] = []
+                    else:
+                        current_family = None
+                elif 'Style:' in line and current_family:
+                    style = line.split('Style:', 1)[1].strip()
+                    if style and style not in font_styles_map[current_family]:
+                        font_styles_map[current_family].append(style)
         except Exception as e:
             print(f"[BACKEND] Failed to get macOS fonts: {e}")
             
@@ -860,11 +1309,23 @@ def get_system_fonts():
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as key:
                 for i in range(1000):
                     try:
-                        name, value, _ = winreg.EnumValue(key, i)
-                        clean_name = re.sub(r'\s*\([^)]+\)$', '', name).strip()
-                        clean_name = re.sub(r'\s*(Bold|Italic|Regular|Oblique|Light|Medium|Semibold|Underline)\b', '', clean_name, flags=re.IGNORECASE).strip()
-                        if clean_name and not clean_name.startswith('.'):
-                            fonts.add(clean_name)
+                         name, value, _ = winreg.EnumValue(key, i)
+                         clean_name = re.sub(r'\s*\([^)]+\)$', '', name).strip()
+                         # Find style words
+                         style_match = re.search(r'\b(Bold|Italic|Regular|Oblique|Light|Medium|Semibold|Underline|Thin|Black|Condensed)\b', clean_name, flags=re.IGNORECASE)
+                         if style_match:
+                             style = style_match.group(1).capitalize()
+                             family = clean_name.replace(style_match.group(0), '').strip()
+                         else:
+                             style = "Regular"
+                             family = clean_name
+                             
+                         if family and not family.startswith('.'):
+                             font_families.add(family)
+                             if family not in font_styles_map:
+                                 font_styles_map[family] = []
+                             if style not in font_styles_map[family]:
+                                 font_styles_map[family].append(style)
                     except OSError:
                         break
         except Exception as e:
@@ -873,22 +1334,40 @@ def get_system_fonts():
     # 3. Linux (fallback)
     else:
         try:
-            out = subprocess.check_output(['fc-list', ':', 'family'], text=True, errors='replace')
+            out = subprocess.check_output(['fc-list', ':', 'family', 'style'], text=True, errors='replace')
             for line in out.splitlines():
-                parts = line.split(',', 1)
-                name = parts[0].strip()
-                if name and not name.startswith('.'):
-                    fonts.add(name)
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    family = parts[0].strip()
+                    style_part = parts[1].strip()
+                    style = "Regular"
+                    if "style=" in style_part:
+                         style = style_part.split("style=", 1)[1].strip()
+                    if family and not family.startswith('.'):
+                        font_families.add(family)
+                        if family not in font_styles_map:
+                            font_styles_map[family] = []
+                        if style not in font_styles_map[family]:
+                            font_styles_map[family].append(style)
         except Exception as e:
             print(f"[BACKEND] Failed to get Linux fonts: {e}")
             
-    return sorted(list(fonts))
+    # Make sure every family has at least "Regular" style
+    for f in font_families:
+        if f not in font_styles_map or not font_styles_map[f]:
+            font_styles_map[f] = ["Regular"]
+            
+    # Sort styles for each family
+    for f in font_styles_map:
+        font_styles_map[f] = sorted(list(set(font_styles_map[f])))
+        
+    return sorted(list(font_families)), font_styles_map
 
 @app.route("/system_fonts", methods=["GET"])
 def system_fonts_endpoint():
     try:
-        fonts = get_system_fonts()
-        return jsonify({"fonts": fonts})
+        families, styles = get_system_fonts_with_styles()
+        return jsonify({"fonts": families, "styles": styles})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -901,6 +1380,8 @@ def replace_fonts_endpoint():
     target_font = request.form.get("target_font", "").strip()
     replacement_font = request.form.get("replacement_font", "").strip()
     filter_type = request.form.get("filter_type", "both").strip()
+    
+    replacement_style = request.form.get("replacement_style", "").strip()
     
     if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
@@ -920,12 +1401,6 @@ def replace_fonts_endpoint():
     else:
         target_family = target_font
         
-    # Check binary length bounds (replacement must be <= target_family)
-    if len(replacement_font) > len(target_family):
-        return jsonify({
-            "error": f"Replacement font name length ({len(replacement_font)} chars) is longer than target font family ({len(target_family)} chars). For binary stability, the replacement font must be equal or shorter in length."
-        }), 400
-        
     # Save the file temporarily
     upload_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
     os.makedirs(upload_dir, exist_ok=True)
@@ -933,7 +1408,14 @@ def replace_fonts_endpoint():
     file.save(file_path)
     
     try:
-        output_drp = replace_fonts_in_drp_project(file_path, target_family, replacement_font, filter_type, target_style)
+        output_drp = replace_fonts_in_drp_project(
+            file_path, 
+            target_family, 
+            replacement_font, 
+            filter_type, 
+            target_style, 
+            replacement_style
+        )
         
         # Clean up uploaded DRP
         os.remove(file_path)
