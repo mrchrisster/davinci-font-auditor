@@ -154,6 +154,11 @@
                     </div>
 
                     <div class="flex flex-col gap-1">
+                        <label class="text-[10px] text-slate-400 font-medium">Replacement Font Size (Optional)</label>
+                        <input type="number" id="replaceSizeInput" placeholder="Leave blank to keep original size (e.g. 50)" class="w-full rounded-lg bg-slate-950 border border-slate-800 text-slate-200 py-2 px-3 text-xs placeholder:text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500" step="0.1" min="1">
+                    </div>
+
+                    <div class="flex flex-col gap-1 pt-2">
                         <label class="text-[10px] text-slate-400 font-medium">3. Filter By Element Type</label>
                         <div class="grid grid-cols-3 gap-1.5 mt-0.5">
                             <label class="cursor-pointer">
@@ -715,6 +720,12 @@
             formData.append('target_font', targetFont);
             formData.append('replacement_font', replacementFont);
             formData.append('replacement_style', replacementStyle);
+            
+            const replacementSize = document.getElementById('replaceSizeInput').value;
+            if (replacementSize) {
+                formData.append('replacement_size', replacementSize);
+            }
+            
             formData.append('filter_type', filterType);
             
             fetch('/replace', {
