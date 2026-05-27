@@ -1272,6 +1272,135 @@ def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filt
         except Exception:
             pass
 
+def parse_font_file(font_path):
+    """Parses a TTF, OTF, or TTC font file to extract family name and style."""
+    try:
+        with open(font_path, 'rb') as f:
+            magic = f.read(4)
+            if len(magic) < 4:
+                return []
+            
+            offsets = []
+            if magic == b'ttcf':
+                # TTC file
+                header = f.read(8)
+                if len(header) < 8:
+                    return []
+                major, minor, num_fonts = struct.unpack('>HHI', header)
+                offset_data = f.read(num_fonts * 4)
+                if len(offset_data) < num_fonts * 4:
+                    return []
+                offsets = list(struct.unpack(f'>{num_fonts}I', offset_data))
+            else:
+                # Regular TTF / OTF
+                offsets = [0]
+                
+            fonts_in_file = []
+            
+            for offset in offsets:
+                f.seek(offset)
+                sfnt_header = f.read(12)
+                if len(sfnt_header) < 12:
+                    continue
+                
+                sfnt_version, num_tables, search_range, entry_selector, range_shift = struct.unpack('>IHHHH', sfnt_header)
+                
+                name_table_offset = None
+                name_table_length = None
+                for _ in range(num_tables):
+                    table_record = f.read(16)
+                    if len(table_record) < 16:
+                        break
+                    tag, checksum, tbl_offset, length = struct.unpack('>4sIII', table_record)
+                    if tag == b'name':
+                        name_table_offset = tbl_offset
+                        name_table_length = length
+                        break
+                
+                if name_table_offset is None:
+                    continue
+                
+                f.seek(name_table_offset)
+                name_table_header = f.read(6)
+                if len(name_table_header) < 6:
+                    continue
+                
+                version, count, storage_offset = struct.unpack('>HHH', name_table_header)
+                
+                records = []
+                for _ in range(count):
+                    record_data = f.read(12)
+                    if len(record_data) < 12:
+                        break
+                    platform_id, encoding_id, language_id, name_id, length, string_offset = struct.unpack('>HHHHHH', record_data)
+                    records.append({
+                        'platform_id': platform_id,
+                        'encoding_id': encoding_id,
+                        'language_id': language_id,
+                        'name_id': name_id,
+                        'length': length,
+                        'string_offset': string_offset
+                    })
+                
+                f.seek(name_table_offset + storage_offset)
+                string_storage = f.read(name_table_length - storage_offset)
+                
+                names = {}
+                for r in records:
+                    if r['name_id'] not in [1, 2, 16, 17]:
+                        continue
+                    
+                    start = r['string_offset']
+                    end = start + r['length']
+                    if end > len(string_storage):
+                        continue
+                    
+                    raw_bytes = string_storage[start:end]
+                    decoded = None
+                    
+                    if r['platform_id'] == 3:  # Windows -> UTF-16BE
+                        try:
+                            decoded = raw_bytes.decode('utf-16-be')
+                        except UnicodeDecodeError:
+                            pass
+                    elif r['platform_id'] == 0:  # Unicode -> UTF-16BE
+                        try:
+                            decoded = raw_bytes.decode('utf-16-be')
+                        except UnicodeDecodeError:
+                            pass
+                    elif r['platform_id'] == 1 and r['encoding_id'] == 0:  # Mac Roman
+                        try:
+                            decoded = raw_bytes.decode('mac-roman')
+                        except UnicodeDecodeError:
+                            pass
+                    
+                    if decoded:
+                        decoded = decoded.strip()
+                        if decoded:
+                            if r['name_id'] not in names:
+                                names[r['name_id']] = []
+                            names[r['name_id']].append(decoded)
+                
+                def get_best_name(ids):
+                    for name_id in ids:
+                        if name_id in names and names[name_id]:
+                            return names[name_id][0]
+                    return None
+                
+                family = get_best_name([16, 1])
+                style = get_best_name([17, 2])
+                
+                if family:
+                    if not style:
+                        style = "Regular"
+                    fonts_in_file.append((family, style))
+            
+            return fonts_in_file
+            
+    except Exception:
+        pass
+    return []
+
 def get_system_fonts_with_styles():
     """Retrieves all unique user-facing system font families and their styles installed on the OS."""
     import platform
@@ -1281,78 +1410,121 @@ def get_system_fonts_with_styles():
     font_families = set(FONTS_DB)  # Start with base fonts
     font_styles_map = {f: ["Regular"] for f in FONTS_DB}
     
-    # 1. macOS (Darwin)
-    if platform.system() == "Darwin":
-        try:
-            out = subprocess.check_output(['system_profiler', 'SPFontsDataType'], text=True, errors='replace')
-            current_family = None
-            for line in out.splitlines():
-                if 'Family:' in line:
-                    current_family = line.split('Family:', 1)[1].strip()
-                    if current_family and not current_family.startswith('.'):
-                        font_families.add(current_family)
-                        if current_family not in font_styles_map:
-                            font_styles_map[current_family] = []
-                    else:
-                        current_family = None
-                elif 'Style:' in line and current_family:
-                    style = line.split('Style:', 1)[1].strip()
-                    if style and style not in font_styles_map[current_family]:
-                        font_styles_map[current_family].append(style)
-        except Exception as e:
-            print(f"[BACKEND] Failed to get macOS fonts: {e}")
+    # Try directory scanning first (cross-platform, fast, accurate)
+    try:
+        paths_to_scan = []
+        if platform.system() == "Darwin":
+            paths_to_scan = [
+                "/System/Library/Fonts",
+                "/Library/Fonts",
+                os.path.expanduser("~/Library/Fonts")
+            ]
+        elif platform.system() == "Windows":
+            system_root = os.environ.get("SystemRoot", "C:\\Windows")
+            paths_to_scan = [
+                os.path.join(system_root, "Fonts"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts")
+            ]
+        elif platform.system() == "Linux":
+            paths_to_scan = [
+                "/usr/share/fonts",
+                "/usr/local/share/fonts",
+                os.path.expanduser("~/.fonts"),
+                os.path.expanduser("~/.local/share/fonts")
+            ]
             
-    # 2. Windows
-    elif platform.system() == "Windows":
-        try:
-            import winreg
-            reg_path = r"Software\Microsoft\Windows NT\CurrentVersion\Fonts"
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as key:
-                for i in range(1000):
-                    try:
-                         name, value, _ = winreg.EnumValue(key, i)
-                         clean_name = re.sub(r'\s*\([^)]+\)$', '', name).strip()
-                         # Find style words
-                         style_match = re.search(r'\b(Bold|Italic|Regular|Oblique|Light|Medium|Semibold|Underline|Thin|Black|Condensed)\b', clean_name, flags=re.IGNORECASE)
-                         if style_match:
-                             style = style_match.group(1).capitalize()
-                             family = clean_name.replace(style_match.group(0), '').strip()
-                         else:
-                             style = "Regular"
-                             family = clean_name
-                             
-                         if family and not family.startswith('.'):
-                             font_families.add(family)
-                             if family not in font_styles_map:
-                                 font_styles_map[family] = []
-                             if style not in font_styles_map[family]:
-                                 font_styles_map[family].append(style)
-                    except OSError:
-                        break
-        except Exception as e:
-            print(f"[BACKEND] Failed to get Windows fonts: {e}")
-            
-    # 3. Linux (fallback)
-    else:
-        try:
-            out = subprocess.check_output(['fc-list', ':', 'family', 'style'], text=True, errors='replace')
-            for line in out.splitlines():
-                parts = line.split(':', 1)
-                if len(parts) == 2:
-                    family = parts[0].strip()
-                    style_part = parts[1].strip()
-                    style = "Regular"
-                    if "style=" in style_part:
-                         style = style_part.split("style=", 1)[1].strip()
-                    if family and not family.startswith('.'):
-                        font_families.add(family)
-                        if family not in font_styles_map:
-                            font_styles_map[family] = []
-                        if style not in font_styles_map[family]:
-                            font_styles_map[family].append(style)
-        except Exception as e:
-            print(f"[BACKEND] Failed to get Linux fonts: {e}")
-            
+        for path in paths_to_scan:
+            if not path or not os.path.exists(path):
+                continue
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    if file.lower().endswith(('.ttf', '.otf', '.ttc')):
+                        full_path = os.path.join(root, file)
+                        res = parse_font_file(full_path)
+                        for family, style in res:
+                            if family and not family.startswith('.'):
+                                font_families.add(family)
+                                if family not in font_styles_map:
+                                    font_styles_map[family] = []
+                                if style and style not in font_styles_map[family]:
+                                    font_styles_map[family].append(style)
+    except Exception as e:
+        print(f"[BACKEND] Directory font scanning failed/limited: {e}")
+        
+    # Fallback to legacy methods if no extra fonts were found
+    if len(font_families) <= len(FONTS_DB):
+        # 1. macOS (Darwin)
+        if platform.system() == "Darwin":
+            try:
+                out = subprocess.check_output(['system_profiler', 'SPFontsDataType'], text=True, errors='replace')
+                current_family = None
+                for line in out.splitlines():
+                    if 'Family:' in line:
+                        current_family = line.split('Family:', 1)[1].strip()
+                        if current_family and not current_family.startswith('.'):
+                            font_families.add(current_family)
+                            if current_family not in font_styles_map:
+                                font_styles_map[current_family] = []
+                        else:
+                            current_family = None
+                    elif 'Style:' in line and current_family:
+                        style = line.split('Style:', 1)[1].strip()
+                        if style and style not in font_styles_map[current_family]:
+                            font_styles_map[current_family].append(style)
+            except Exception as e:
+                print(f"[BACKEND] Failed to get macOS fonts fallback: {e}")
+                
+        # 2. Windows
+        elif platform.system() == "Windows":
+            try:
+                import winreg
+                reg_path = r"Software\Microsoft\Windows NT\CurrentVersion\Fonts"
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as key:
+                    for i in range(1000):
+                        try:
+                             name, value, _ = winreg.EnumValue(key, i)
+                             clean_name = re.sub(r'\s*\([^)]+\)$', '', name).strip()
+                             # Find style words
+                             style_match = re.search(r'\b(Bold|Italic|Regular|Oblique|Light|Medium|Semibold|Underline|Thin|Black|Condensed)\b', clean_name, flags=re.IGNORECASE)
+                             if style_match:
+                                 style = style_match.group(1).capitalize()
+                                 family = clean_name.replace(style_match.group(0), '').strip()
+                             else:
+                                 style = "Regular"
+                                 family = clean_name
+                                 
+                             if family and not family.startswith('.'):
+                                 font_families.add(family)
+                                 if family not in font_styles_map:
+                                     font_styles_map[family] = []
+                                 if style not in font_styles_map[family]:
+                                     font_styles_map[family].append(style)
+                        except OSError:
+                            break
+            except Exception as e:
+                print(f"[BACKEND] Failed to get Windows fonts fallback: {e}")
+                
+        # 3. Linux (fallback)
+        else:
+            try:
+                out = subprocess.check_output(['fc-list', ':', 'family', 'style'], text=True, errors='replace')
+                for line in out.splitlines():
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        family = parts[0].strip()
+                        style_part = parts[1].strip()
+                        style = "Regular"
+                        if "style=" in style_part:
+                             style = style_part.split("style=", 1)[1].strip()
+                        if family and not family.startswith('.'):
+                            font_families.add(family)
+                            if family not in font_styles_map:
+                                font_styles_map[family] = []
+                            if style not in font_styles_map[family]:
+                                font_styles_map[family].append(style)
+            except Exception as e:
+                print(f"[BACKEND] Failed to get Linux fonts fallback: {e}")
+                
     # Make sure every family has at least "Regular" style
     for f in font_families:
         if f not in font_styles_map or not font_styles_map[f]:
