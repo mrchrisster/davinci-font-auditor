@@ -75,6 +75,14 @@ If you prefer running the application from the command line:
 
 ---
 
+
+### Troubleshooting
+
+This works fine on Mac but DRP projects created on Windows might crash. Please report any issues.
+More research has to be done on font parsing in  Windows
+  
+---
+
 ## 📄 License
 
 This project is licensed under the MIT License.
