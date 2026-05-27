@@ -5,7 +5,13 @@ A desktop utility tool to audit, scan, and map font family usage across timeline
 ![Dashboard Preview](https://github.com/mrchrisster/davinci-font-auditor/blob/main/media/app.png)
 
 ---
+## What you might need it for
 
+I developed this tool because transferring a project between Windows and Mac revealed that not all fonts were named the same between Windows and Mac. Instead of manually going through the project and updating all fonts, you can use this tool to update text slates with different fonts.
+
+This is also very useful to check if all fonts in your project are consistent or if some text slates have the wrong font installed.
+  
+  
 ## 🚀 Key Features
 
 * **DRP Container Extraction**: Instantly ingests and extracts `.drp` files.
