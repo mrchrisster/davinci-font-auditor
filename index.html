@@ -594,31 +594,10 @@
                 targetStyle = parts[1].trim();
             }
             
-            // Check family length
-            const familyValid = replacementVal.length <= targetFamily.length;
+            charLengthIndicator.innerText = `${replacementVal.length} chars (Target was ${targetFamily.length})`;
             
-            // Check style length (only if targeting a specific style)
-            let styleValid = true;
-            if (targetStyle && replacementStyle) {
-                styleValid = replacementStyle.length <= targetStyle.length;
-            }
-            
-            charLengthIndicator.innerText = `${replacementVal.length}/${targetFamily.length} chars${targetStyle ? ` (Style: ${replacementStyle.length}/${targetStyle.length})` : ''}`;
-            
-            if (!familyValid || !styleValid) {
-                lengthWarning.classList.remove('hidden');
-                if (!familyValid && !styleValid) {
-                    lengthWarning.innerText = "Warning: Both replacement font family and style name must be equal or shorter than target.";
-                } else if (!familyValid) {
-                    lengthWarning.innerText = "Warning: Replacement font family must be equal or shorter than target family.";
-                } else {
-                    lengthWarning.innerText = `Warning: Replacement style ("${replacementStyle}") must be equal or shorter than target style ("${targetStyle}").`;
-                }
-                replaceBtn.disabled = true;
-            } else {
-                lengthWarning.classList.add('hidden');
-                replaceBtn.disabled = false;
-            }
+            lengthWarning.classList.add('hidden');
+            replaceBtn.disabled = false;
         }
         
         replaceTargetSelect.addEventListener('change', () => {
