@@ -837,15 +837,25 @@ def get_style_extra_bytes(style_name):
         return STYLE_EXTRA_MAP["black"]
     return b""
 
-def compute_qfont_trailing_flags(style_name):
-    """Compute the 4 trailing bytes of a QFont block based on style properties."""
-    flags = 0xFF
+def compute_qfont_trailing_flags(style_name, orig_trailing):
+    """Compute the 4 trailing bytes of a QFont block based on style properties, preserving original flags."""
+    if not orig_trailing or len(orig_trailing) < 4:
+        orig_trailing = b'\xf8\xff\x16\x03'
+        
+    flags = orig_trailing[1]
     style_lower = style_name.lower().strip()
+    
     if 'italic' in style_lower or 'oblique' in style_lower:
         flags &= ~(1 << 4)  # Clear bit 4
+    else:
+        flags |= (1 << 4)   # Set bit 4
+        
     if any(w in style_lower for w in ['bold', 'black', 'heavy', 'semibold', 'semi bold', 'demibold']):
         flags &= ~(1 << 3)  # Clear bit 3
-    return b'\xf8' + bytes([flags]) + b'\x16\x03'
+    else:
+        flags |= (1 << 3)   # Set bit 3
+        
+    return bytes([orig_trailing[0], flags, orig_trailing[2], orig_trailing[3]])
 
 def rebuild_custom_structure(custom_bytes, target_fam, replacement_fam, target_sty, replacement_sty):
     family_len = struct.unpack('<I', custom_bytes[4:8])[0]
@@ -887,14 +897,36 @@ def rebuild_custom_structure(custom_bytes, target_fam, replacement_fam, target_s
     new_sty_len = len(new_sty_bytes) + 4
     new_sty_prefix = struct.pack('<I', new_sty_len)
     
+    orig_between = custom_bytes[style_len_offset + 4 + sty_str_len : color_prefix_offset]
+    
     if target_sty.lower() == replacement_sty.lower():
-        new_style_extra = custom_bytes[style_len_offset + 4 + sty_str_len : color_prefix_offset]
+        new_style_extra = orig_between
     else:
-        new_style_extra = get_style_extra_bytes(replacement_sty)
+        # The region between style string end and color data contains:
+        #   [optional prefix bytes] + [style weight bytes]
+        # We must preserve the prefix and only replace the weight bytes.
+        old_weight = get_style_extra_bytes(target_sty)
+        new_weight = get_style_extra_bytes(replacement_sty)
         
-    # The last 4 bytes of rest are QFont trailing flags, which must be recomputed
-    color_data = rest[:-4] if len(rest) >= 4 else b""
-    new_trailing = compute_qfont_trailing_flags(replacement_sty)
+        if old_weight and orig_between.endswith(old_weight):
+            # Strip old weight from end, keep prefix, append new weight
+            prefix = orig_between[:-len(old_weight)]
+            new_style_extra = prefix + new_weight
+        else:
+            # Can't identify old weight bytes; preserve prefix heuristically.
+            # The weight bytes are typically the last 2-3 bytes.
+            # If we have new weight bytes, try to find a reasonable split.
+            new_style_extra = orig_between[:max(0, len(orig_between) - len(old_weight))] + new_weight if old_weight else orig_between
+        
+    # The last 4 bytes of rest are QFont trailing flags, which must be recomputed safely
+    if len(rest) >= 4:
+        color_data = rest[:-4]
+        orig_trailing = rest[-4:]
+    else:
+        color_data = b""
+        orig_trailing = b'\xf8\xff\x16\x03'
+        
+    new_trailing = compute_qfont_trailing_flags(replacement_sty, orig_trailing)
     
     new_payload = (
         new_fam_prefix + new_fam_bytes +
@@ -924,8 +956,35 @@ def find_custom_block_at_sep(raw_data, idx):
                 return total_size_offset, total_size_val, fam_str
     return None
 
+def find_qfont_block_around_idx(raw_data, idx, target_family):
+    """
+    Given an index where target_family (utf-16-le) was found, scan backwards to
+    find the valid length prefixes for a QFont custom block.
+    Returns (total_size_offset, total_size_val, fam_str).
+    """
+    for fam_start in range(idx, max(-1, idx - 100), -2):
+        if fam_start >= 4:
+            fam_len = struct.unpack('<I', raw_data[fam_start-4 : fam_start])[0]
+            # Heuristic: fam_len should be even, usually between 6 and 200
+            if 6 <= fam_len <= 200 and fam_len % 2 == 0:
+                if fam_start >= 8:
+                    total_size_offset = fam_start - 8
+                    total_size = struct.unpack('<I', raw_data[total_size_offset : total_size_offset+4])[0]
+                    # Check if total_size is reasonable
+                    if 30 <= total_size <= 500:
+                        fam_str_len = fam_len - 4
+                        if fam_start + fam_str_len <= len(raw_data):
+                            try:
+                                fam_str = raw_data[fam_start : fam_start + fam_str_len].decode('utf-16-le')
+                                if target_family.lower() in fam_str.lower():
+                                    return total_size_offset, total_size, fam_str
+                            except Exception:
+                                pass
+    return None
+
 def modify_proto_tree(nodes, target_family, replacement_family, target_style=None, replacement_style=None):
     modified_any = False
+    tf_bytes = target_family.encode('utf-16-le')
     
     for node in nodes:
         if node.wire_type == 2:
@@ -935,43 +994,46 @@ def modify_proto_tree(nodes, target_family, replacement_family, target_style=Non
             else:
                 idx = 0
                 while True:
-                    idx = node.raw_data.find(b'\x00\x00TB', idx)
+                    idx = node.raw_data.find(tf_bytes, idx)
                     if idx < 0:
                         break
+                    
                     if idx >= 8:
                         try:
-                            res = find_custom_block_at_sep(node.raw_data, idx)
+                            res = find_qfont_block_around_idx(node.raw_data, idx, target_family)
                             if res is not None:
                                 total_size_offset, total_size_val, fam_str = res
-                                if 50 <= total_size_val <= 500:
-                                    if target_family.lower() in fam_str.lower() or fam_str.lower() in target_family.lower():
-                                        custom_bytes = node.raw_data[total_size_offset : total_size_offset + total_size_val]
-                                        
-                                        style_len_offset = idx + 4
-                                        style_len = struct.unpack('<I', node.raw_data[style_len_offset : style_len_offset+4])[0]
-                                        sty_str_len = style_len - 4
-                                        current_style = node.raw_data[style_len_offset+4 : style_len_offset+4+sty_str_len].decode('utf-16-le', errors='replace')
-                                        
-                                        if target_style and target_style.lower() not in current_style.lower():
-                                            idx += 4
-                                            continue
-                                            
-                                        r_style = replacement_style if replacement_style else current_style
-                                        new_custom_bytes = rebuild_custom_structure(
-                                            custom_bytes, target_family, replacement_family, current_style, r_style
-                                        )
-                                        
-                                        node.raw_data = node.raw_data[:total_size_offset] + new_custom_bytes + node.raw_data[total_size_offset + total_size_val:]
-                                        
-                                        outer_size = len(node.raw_data)
-                                        node.raw_data = struct.pack('<I', outer_size) + node.raw_data[4:]
-                                        modified_any = True
-                                        
-                                        idx = total_size_offset + len(new_custom_bytes)
-                                        continue
+                                custom_bytes = node.raw_data[total_size_offset : total_size_offset + total_size_val]
+                                
+                                family_len = struct.unpack('<I', custom_bytes[4:8])[0]
+                                sep_offset = 8 + family_len - 4
+                                sep = custom_bytes[sep_offset : sep_offset + 4]
+                                
+                                style_len_offset = sep_offset + 4
+                                style_len = struct.unpack('<I', custom_bytes[style_len_offset : style_len_offset+4])[0]
+                                sty_str_len = style_len - 4
+                                current_style = custom_bytes[style_len_offset+4 : style_len_offset+4+sty_str_len].decode('utf-16-le', errors='replace')
+                                
+                                if target_style and target_style.lower() not in current_style.lower():
+                                    idx += len(tf_bytes)
+                                    continue
+                                    
+                                r_style = replacement_style if replacement_style else current_style
+                                new_custom_bytes = rebuild_custom_structure(
+                                    custom_bytes, target_family, replacement_family, current_style, r_style
+                                )
+                                
+                                node.raw_data = node.raw_data[:total_size_offset] + new_custom_bytes + node.raw_data[total_size_offset + total_size_val:]
+                                
+                                outer_size = len(node.raw_data)
+                                node.raw_data = struct.pack('<I', outer_size) + node.raw_data[4:]
+                                modified_any = True
+                                
+                                idx = total_size_offset + len(new_custom_bytes)
+                                continue
                         except Exception as e:
                             print(f"[BACKEND] Error scanning QFont block: {e}")
-                    idx += 4
+                    idx += len(tf_bytes)
                     
     return modified_any
 
@@ -1009,37 +1071,11 @@ def replace_font_in_blob(hex_str, target_font, replacement_font, target_style=No
                     except Exception as e:
                         print(f"[BACKEND] ZSTD Protobuf replacement failed: {e}")
                         
-                    # ZSTD fallback (original padding logic)
-                    target_bytes = target_font.encode('utf-16-le')
-                    replacement_bytes = replacement_font.encode('utf-16-le')
-                    if len(replacement_bytes) < len(target_bytes):
-                        padded = replacement_bytes + b'\x00' * (len(target_bytes) - len(replacement_bytes))
-                    else:
-                        padded = replacement_bytes[:len(target_bytes)]
-                        
-                    modified_decomp = decomp
-                    replaced_any = False
-                    if target_bytes in decomp:
-                        modified_decomp = modified_decomp.replace(target_bytes, padded)
-                        replaced_any = True
-                        
-                    if target_style and replacement_style:
-                        t_style_bytes = target_style.encode('utf-16-le')
-                        r_style_bytes = replacement_style.encode('utf-16-le')
-                        if len(r_style_bytes) < len(t_style_bytes):
-                            padded_style = r_style_bytes + b'\x00' * (len(t_style_bytes) - len(r_style_bytes))
-                        else:
-                            padded_style = r_style_bytes[:len(t_style_bytes)]
-                        if t_style_bytes in modified_decomp:
-                            modified_decomp = modified_decomp.replace(t_style_bytes, padded_style)
-                            replaced_any = True
-                            
-                    if replaced_any:
-                        dctx = zstandard.ZstdCompressor()
-                        compressed = dctx.compress(modified_decomp)
-                        header = struct.pack('>II', 2, len(compressed) + 1)
-                        type_marker = b'\x81'
-                        return (header + type_marker + compressed).hex().upper()
+                    # Remove dangerous ZSTD fallback that pads strings with null bytes.
+                    # If the robust protobuf scanner above fails to replace the font,
+                    # it means it wasn't a recognized QFont block, and replacing it 
+                    # with null padding will corrupt the string in Qt and crash Resolve.
+                    pass
         except Exception as e:
             print(f"[BACKEND] ZSTD replacement failed: {e}")
             
@@ -1073,51 +1109,12 @@ def replace_font_in_blob(hex_str, target_font, replacement_font, target_style=No
                             pass
                             
                         # Fallback to simple replace
-                        target_utf16 = target_font.encode('utf-16-le')
-                        replacement_utf16 = replacement_font.encode('utf-16-le')
-                        target_utf8 = target_font.encode('utf-8')
-                        replacement_utf8 = replacement_font.encode('utf-8')
-                        
                         modified_decomp = decomp
                         replaced_any = False
-                        
-                        if target_utf16 in decomp:
-                            if len(replacement_utf16) < len(target_utf16):
-                                padded = replacement_utf16 + b'\x00' * (len(target_utf16) - len(replacement_utf16))
-                            else:
-                                padded = replacement_utf16[:len(target_utf16)]
-                            modified_decomp = modified_decomp.replace(target_utf16, padded)
-                            replaced_any = True
                             
                         if target_utf8 in decomp:
                             if len(replacement_utf8) < len(target_utf8):
                                 padded = replacement_utf8 + b'\x00' * (len(target_utf8) - len(replacement_utf8))
-                            else:
-                                padded = replacement_utf8[:len(target_utf8)]
-                            modified_decomp = modified_decomp.replace(target_utf8, padded)
-                            replaced_any = True
-                            
-                        if target_style and replacement_style:
-                            t_style_u16 = target_style.encode('utf-16-le')
-                            r_style_u16 = replacement_style.encode('utf-16-le')
-                            if t_style_u16 in modified_decomp:
-                                if len(r_style_u16) < len(t_style_u16):
-                                    padded_style = r_style_u16 + b'\x00' * (len(t_style_u16) - len(r_style_u16))
-                                else:
-                                    padded_style = r_style_u16[:len(t_style_u16)]
-                                modified_decomp = modified_decomp.replace(t_style_u16, padded_style)
-                                replaced_any = True
-                                
-                            t_style_u8 = target_style.encode('utf-8')
-                            r_style_u8 = replacement_style.encode('utf-8')
-                            if t_style_u8 in modified_decomp:
-                                if len(r_style_u8) < len(t_style_u8):
-                                    padded_style = r_style_u8 + b'\x00' * (len(t_style_u8) - len(r_style_u8))
-                                else:
-                                    padded_style = r_style_u8[:len(t_style_u8)]
-                                modified_decomp = modified_decomp.replace(t_style_u8, padded_style)
-                                replaced_any = True
-                            
                         if replaced_any:
                             comp_obj = zlib.compressobj(wbits=wbits)
                             compressed = comp_obj.compress(modified_decomp) + comp_obj.flush()
@@ -1157,6 +1154,10 @@ def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filt
                 try:
                     with open(sf_path, 'rb') as f:
                         xml_content = f.read()
+                        
+                    # Capture the original XML declaration and comments (everything before the root tag)
+                    idx = xml_content.find(b'<Sm2')
+                    xml_header = xml_content[:idx] if idx >= 0 else b'<?xml version="1.0" encoding="UTF-8"?>\r\n'
                         
                     # Sanitize with our unique __DOUBLE_COLON__ placeholder
                     sanitized = xml_content.replace(b'::', b'__DOUBLE_COLON__')
@@ -1225,7 +1226,7 @@ def replace_fonts_in_drp_project(drp_path, target_family, replacement_font, filt
                     if modified:
                         print(f"[BACKEND] Saving modified sequence XML: {sf}")
                         serialized = ET.tostring(root, encoding='utf-8')
-                        restored = serialized.replace(b'__DOUBLE_COLON__', b'::')
+                        restored = xml_header + serialized.replace(b'__DOUBLE_COLON__', b'::')
                         with open(sf_path, 'wb') as f:
                             f.write(restored)
                             
