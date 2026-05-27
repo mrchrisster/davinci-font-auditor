@@ -29,28 +29,46 @@ This is also very useful to check if all fonts in your project are consistent or
 ## 📦 Installation & Setup
 
 ### Prerequisites
-* Python 3.10 or higher
+* Python 3.10 or higher (ensure Python is added to your PATH/environment variables during installation)
 * A modern web browser
 
-### Running Locally
+### 🚀 Easy Launch (Recommended)
 
-1. **Clone the repository**:
+1. **Clone or Download the repository**:
+   - Clone via Git: `git clone https://github.com/chrishelms/Davinci-Font-Mapper.git`
+   - Or click **Code -> Download ZIP** on GitHub and unzip the folder.
+2. **Run the launcher**:
+   - **macOS**: Double-click `run_mac.command` in the project folder.
+     *Note: If macOS displays a security warning, right-click the file, choose **Open**, and click **Open** in the dialog.*
+   - **Windows**: Double-click `run_windows.bat` in the project folder.
+
+*The script will automatically install/update dependencies, launch the local backend server, and open your browser to your new dashboard at **[http://127.0.0.1:5001](http://127.0.0.1:5001)**.*
+
+---
+
+### 💻 Manual Launch
+
+If you prefer running the application from the command line:
+
+1. **Navigate to the project folder**:
    ```bash
-   git clone https://github.com/chrishelms/Davinci-Font-Mapper.git
    cd Davinci-Font-Mapper
    ```
 
-2. **Start the local backend server**:
+2. **Install dependencies**:
+   ```bash
+   python3 -m pip install -r requirements.txt
+   ```
+
+3. **Start the local server**:
    ```bash
    python3 app.py
    ```
-   *The server runs on `http://127.0.0.1:5001` with debug reloading enabled.*
 
-3. **Open the Dashboard**:
-   Go to your web browser and navigate to:
-   **[http://127.0.0.1:5001](http://127.0.0.1:5001)**
+4. **Open the Dashboard**:
+   Open your browser and navigate to **[http://127.0.0.1:5001](http://127.0.0.1:5001)**.
 
-4. **Upload a DRP File**:
+5. **Upload a DRP File**:
    * Drag your `.drp` project file into the dashed upload area.
    * View the real-time server logs as it parses the database.
    * Pick a timeline from the dropdown to audit font names, element types (Rich vs Subtitle), and clip timings.
